@@ -318,8 +318,8 @@ function AuthScreen() {
       <section className="auth-hero">
         <img src="/logo.png" alt="Orchidea" />
         <span className="pill">Orchidea Organizer</span>
-        <h1>Un posto unico per gestire il locale con Laura.</h1>
-        <p>Attività, agenda, liste, note, documenti, budget e comunicazioni importanti in una bacheca condivisa stile FamilyWall, ma pensata per Orchidea.</p>
+        <h1>Un posto unico per gestire il locale.</h1>
+        <p>Attività, agenda, liste, note, documenti, budget e comunicazioni importanti in una bacheca condivisa e pensata per Orchidea.</p>
         <div className="hero-grid">
           <div>✅ Cose da fare</div>
           <div>📅 Calendario</div>
