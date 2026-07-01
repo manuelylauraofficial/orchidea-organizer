@@ -89,3 +89,22 @@ La versione aggiornata usa la funzione `create_space_with_owner`, che crea lo sp
 ```bash
 npm run build
 ```
+
+
+## Redirect email Supabase dopo il deploy
+
+Per evitare che la conferma email rimandi a `localhost`, imposta su Vercel anche:
+
+```env
+VITE_APP_URL=https://orchidea-organizer.vercel.app
+```
+
+Poi in Supabase vai in **Authentication → URL Configuration** e imposta:
+
+- **Site URL**: `https://orchidea-organizer.vercel.app`
+- **Redirect URLs**:
+  - `http://localhost:5173/**`
+  - `https://orchidea-organizer.vercel.app/**`
+  - eventuale dominio personalizzato, ad esempio `https://app.orchidea.../**`
+
+L'app passa `emailRedirectTo` durante la registrazione, così il link di conferma email usa l'URL pubblico e non quello locale.

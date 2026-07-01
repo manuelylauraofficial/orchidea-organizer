@@ -201,7 +201,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <img src="/newlogo.png" alt="Orchidea" />
+          <img src="/logo.png" alt="Orchidea" />
           <div>
             <strong>Orchidea</strong>
             <span>Organizer</span>
@@ -277,6 +277,12 @@ VITE_SUPABASE_ANON_KEY=...`}</pre>
   )
 }
 
+function getAuthRedirectUrl() {
+  const configuredUrl = import.meta.env.VITE_APP_URL?.trim()
+  const baseUrl = configuredUrl || (typeof window !== 'undefined' ? window.location.origin : '')
+  return baseUrl.replace(/\/+$/, '')
+}
+
 function AuthScreen() {
   const [mode, setMode] = useState('login')
   const [fullName, setFullName] = useState('')
@@ -297,6 +303,7 @@ function AuthScreen() {
           email,
           password,
           options: {
+            emailRedirectTo: `${getAuthRedirectUrl()}/`,
             data: {
               full_name: fullName || email.split('@')[0],
               signup_pin: signupPin.trim(),
@@ -318,8 +325,8 @@ function AuthScreen() {
       <section className="auth-hero">
         <img src="/logo.png" alt="Orchidea" />
         <span className="pill">Orchidea Organizer</span>
-        <h1>Un posto unico per gestire il locale.</h1>
-        <p>Attività, agenda, liste, note, documenti, budget e comunicazioni importanti in una bacheca condivisa e pensata per Orchidea.</p>
+        <h1>Un posto unico per gestire il locale con Laura.</h1>
+        <p>Attività, agenda, liste, note, documenti, budget e comunicazioni importanti in una bacheca condivisa stile FamilyWall, ma pensata per Orchidea.</p>
         <div className="hero-grid">
           <div>✅ Cose da fare</div>
           <div>📅 Calendario</div>
@@ -377,7 +384,7 @@ function Onboarding({ user, onDone, showToast }) {
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <img src="/newlogo.png" alt="Orchidea" />
+        <img src="/logo.png" alt="Orchidea" />
         <h1>Configuriamo lo spazio condiviso</h1>
         <p>La prima persona crea lo spazio Orchidea. Chi arriva dopo entra con il codice invito.</p>
 
