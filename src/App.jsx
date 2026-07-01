@@ -201,7 +201,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <img src="/logo.png" alt="Orchidea" />
+          <img src="/newlogo.png" alt="Orchidea" />
           <div>
             <strong>Orchidea</strong>
             <span>Organizer</span>
@@ -377,7 +377,7 @@ function Onboarding({ user, onDone, showToast }) {
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <img src="/logo.png" alt="Orchidea" />
+        <img src="/newlogo.png" alt="Orchidea" />
         <h1>Configuriamo lo spazio condiviso</h1>
         <p>La prima persona crea lo spazio Orchidea. Chi arriva dopo entra con il codice invito.</p>
 
