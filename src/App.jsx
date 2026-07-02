@@ -10,6 +10,7 @@ const TABS = [
   { id: 'documents', label: 'Documenti', icon: '📂' },
   { id: 'budget', label: 'Budget', icon: '💶' },
   { id: 'announcements', label: 'Messaggi', icon: '📣' },
+  { id: 'chat', label: 'Chat', icon: '💬' },
   { id: 'settings', label: 'Impostazioni', icon: '⚙️' },
 ]
 
@@ -51,6 +52,22 @@ async function showBrowserNotification(title, options) {
   new window.Notification(title, options)
 }
 
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const rawData = window.atob(base64)
+  const outputArray = new Uint8Array(rawData.length)
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i)
+  return outputArray
+}
+
+async function getServiceWorkerRegistration() {
+  if (!('serviceWorker' in navigator)) throw new Error('Service Worker non supportato su questo dispositivo.')
+  const existing = await navigator.serviceWorker.getRegistration('/')
+  if (existing) return existing
+  return navigator.serviceWorker.register('/sw.js')
+}
+
 function App() {
   const missingEnv = !import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY
   const [session, setSession] = useState(null)
@@ -63,6 +80,8 @@ function App() {
   const [toast, setToast] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [notificationPermission, setNotificationPermission] = useState(getNotificationPermission)
+  const [notifications, setNotifications] = useState([])
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const membersRef = useRef([])
   const [data, setData] = useState({
     tasks: [], events: [], notes: [], lists: [], documents: [], expenses: [], announcements: [], members: []
@@ -97,6 +116,7 @@ function App() {
         setCurrentSpace(null)
         setWorkspaceLoading(false)
         setData({ tasks: [], events: [], notes: [], lists: [], documents: [], expenses: [], announcements: [], members: [] })
+        setNotifications([])
       }
     })
 
@@ -140,6 +160,26 @@ function App() {
     return () => supabase.removeChannel(channel)
   }, [currentSpace?.id, user?.id])
 
+  useEffect(() => {
+    if (!user?.id) return
+    loadNotifications()
+
+    const channel = supabase.channel(`notifications-${user.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'app_notifications',
+        filter: `recipient_id=eq.${user.id}`,
+      }, (payload) => {
+        const row = payload.new
+        setNotifications((prev) => [row, ...prev].slice(0, 50))
+        showToast(row.body ? `${row.title}: ${row.body}` : row.title)
+      })
+      .subscribe()
+
+    return () => supabase.removeChannel(channel)
+  }, [user?.id])
+
   function showToast(message) {
     setToast(message)
     window.setTimeout(() => setToast(''), 2600)
@@ -147,18 +187,93 @@ function App() {
 
   async function requestNotifications() {
     if (!canUseBrowserNotifications()) {
-      showToast('Questo dispositivo o browser non supporta le notifiche locali.')
+      showToast('Questo dispositivo o browser non supporta le notifiche push.')
+      return
+    }
+    if (!user?.id || !currentSpace?.id) {
+      showToast('Apri prima uno spazio Orchidea.')
+      return
+    }
+    const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY?.trim()
+    if (!vapidPublicKey) {
+      showToast('Manca VITE_VAPID_PUBLIC_KEY su Vercel/.env. Aggiungila per abilitare le push vere.')
       return
     }
 
-    const permission = await window.Notification.requestPermission()
-    setNotificationPermission(permission)
+    try {
+      const permission = await window.Notification.requestPermission()
+      setNotificationPermission(permission)
+      if (permission !== 'granted') {
+        showToast('Notifiche non attivate. Puoi abilitarle dalle impostazioni del browser.')
+        return
+      }
 
-    if (permission === 'granted') {
-      showToast('Notifiche attivate. Ti avviso quando Laura o un altro utente aggiunge qualcosa.')
-    } else {
-      showToast('Notifiche non attivate. Puoi abilitarle dalle impostazioni del browser.')
+      const registration = await getServiceWorkerRegistration()
+      let subscription = await registration.pushManager.getSubscription()
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+        })
+      }
+
+      const json = subscription.toJSON()
+      const { error } = await supabase.from('push_subscriptions').upsert({
+        user_id: user.id,
+        space_id: currentSpace.id,
+        endpoint: subscription.endpoint,
+        p256dh: json.keys?.p256dh,
+        auth: json.keys?.auth,
+        user_agent: navigator.userAgent,
+        active: true,
+      }, { onConflict: 'endpoint' })
+
+      if (error) throw error
+      showToast('Notifiche push attivate su questo dispositivo.')
+    } catch (error) {
+      showToast(error.message || 'Non sono riuscito ad attivare le notifiche push.')
     }
+  }
+
+  async function loadNotifications() {
+    if (!user?.id) return
+    const { data: rows, error } = await supabase
+      .from('app_notifications')
+      .select('*')
+      .eq('recipient_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(50)
+
+    if (!error) setNotifications(rows || [])
+  }
+
+  async function markNotificationsRead() {
+    if (!user?.id) return
+    const now = new Date().toISOString()
+    setNotifications((prev) => prev.map((n) => n.read_at ? n : { ...n, read_at: now }))
+    await supabase
+      .from('app_notifications')
+      .update({ read_at: now })
+      .eq('recipient_id', user.id)
+      .is('read_at', null)
+  }
+
+  async function sendPushNotification({ kind, title, body, priority = 'normale', sourceTable = null, sourceId = null, recipientIds = null }) {
+    if (!user?.id) return
+    const payload = {
+      space_id: currentSpace?.id || null,
+      kind,
+      title,
+      body,
+      priority,
+      source_table: sourceTable,
+      source_id: sourceId,
+      recipient_ids: recipientIds,
+      url: '/',
+    }
+
+    const { error } = await supabase.functions.invoke('send-push-notification', { body: payload })
+    if (error) console.warn('Push non inviata:', error.message)
   }
 
   function handleRealtimeChange(table, payload) {
@@ -177,16 +292,15 @@ function App() {
 
     showToast(`${author} ha aggiunto: ${body}`)
 
-    if (getNotificationPermission() === 'granted') {
+    // Se le push vere non sono ancora configurate, usiamo una notifica locale come fallback mentre l'app è aperta.
+    if (!import.meta.env.VITE_VAPID_PUBLIC_KEY && getNotificationPermission() === 'granted') {
       showBrowserNotification(notificationTitle, {
         body,
         icon: '/image/icon.png',
         badge: '/image/icon.png',
         tag: `${table}-${row.id}`,
         data: { url: '/' },
-      }).catch(() => {
-        // Alcuni browser mobile possono bloccare le notifiche locali.
-      })
+      }).catch(() => {})
     }
   }
 
@@ -204,7 +318,7 @@ function App() {
       if (!existingProfile) {
         const { data: newProfile, error } = await supabase
           .from('profiles')
-          .insert({ id: currentUser.id, full_name: defaultName })
+          .insert({ id: currentUser.id, full_name: defaultName, email: currentUser.email })
           .select()
           .single()
 
@@ -212,6 +326,9 @@ function App() {
         setProfile(newProfile || { id: currentUser.id, full_name: defaultName })
       } else {
         setProfile(existingProfile)
+        if (existingProfile.email !== currentUser.email) {
+          await supabase.from('profiles').update({ email: currentUser.email }).eq('id', currentUser.id)
+        }
       }
 
       await loadSpaces(currentUser.id)
@@ -291,7 +408,10 @@ function App() {
     memberName: (id) => data.members.find((m) => m.user_id === id)?.profile?.full_name || 'Non assegnato',
     requestNotifications,
     notificationPermission,
+    sendPushNotification,
   }
+
+  const unreadCount = notifications.filter((n) => !n.read_at).length
 
   if (loading) return <Splash text="Carico Orchidea Organizer…" />
   if (missingEnv) return <SetupMissing />
@@ -334,8 +454,14 @@ function App() {
           </div>
           <div className="topbar-actions">
             <span className={`sync-dot ${refreshing ? 'loading' : ''}`}></span>
-            <button className={`notify-toggle ${notificationPermission === 'granted' ? 'enabled' : ''}`} onClick={requestNotifications} title={notificationPermission === 'granted' ? 'Notifiche attive' : 'Attiva notifiche'}>
-              {notificationPermission === 'granted' ? '🔔' : '🔕'}
+            <div className="notification-wrap">
+              <button className="notify-toggle enabled" onClick={() => setNotificationsOpen((v) => !v)} title="Apri notifiche">
+                🔔{unreadCount > 0 && <span className="notif-badge">{unreadCount > 9 ? '9+' : unreadCount}</span>}
+              </button>
+              {notificationsOpen && <NotificationPanel notifications={notifications} onClose={() => setNotificationsOpen(false)} onMarkRead={markNotificationsRead} />}
+            </div>
+            <button className={`notify-toggle ${notificationPermission === 'granted' ? 'enabled' : ''}`} onClick={requestNotifications} title={notificationPermission === 'granted' ? 'Push attive' : 'Attiva notifiche push'}>
+              {notificationPermission === 'granted' ? '📲' : '🔕'}
             </button>
             <button className="ghost" onClick={() => loadAll(currentSpace.id)}>Aggiorna</button>
             <div className="avatar">{(profile?.full_name || user.email || 'O').slice(0, 1).toUpperCase()}</div>
@@ -358,6 +484,7 @@ function App() {
         {active === 'documents' && <Documents {...helpers} />}
         {active === 'budget' && <Budget {...helpers} />}
         {active === 'announcements' && <Announcements {...helpers} />}
+        {active === 'chat' && <Chat {...helpers} />}
         {active === 'settings' && <Settings {...helpers} spaces={spaces} setCurrentSpace={setCurrentSpace} reloadSpaces={() => loadSpaces(user.id)} />}
       </main>
 
@@ -562,7 +689,7 @@ function Dashboard({ data, memberName, setActive }) {
   )
 }
 
-function Tasks({ currentSpace, data, showToast, loadAll, memberName }) {
+function Tasks({ currentSpace, data, showToast, loadAll, memberName, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', description: '', priority: 'media', due_date: '', assigned_to: '' })
 
   async function addTask(e) {
@@ -574,10 +701,11 @@ function Tasks({ currentSpace, data, showToast, loadAll, memberName }) {
       space_id: currentSpace.id,
       status: 'todo',
     }
-    const { error } = await supabase.from('tasks').insert(payload)
+    const { data: created, error } = await supabase.from('tasks').insert(payload).select('id,title,priority').single()
     if (error) showToast(error.message)
     else {
       setForm({ title: '', description: '', priority: 'media', due_date: '', assigned_to: '' })
+      sendPushNotification({ kind: 'task', title: 'Nuova attività Orchidea', body: created?.title || payload.title, priority: created?.priority || payload.priority, sourceTable: 'tasks', sourceId: created?.id })
       loadAll()
     }
   }
@@ -645,7 +773,7 @@ function Tasks({ currentSpace, data, showToast, loadAll, memberName }) {
   )
 }
 
-function Calendar({ currentSpace, data, showToast, loadAll }) {
+function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', starts_at: `${todayISO()}T21:30`, ends_at: '', location: '', category: 'generale', notes: '' })
   const [filterDay, setFilterDay] = useState('')
 
@@ -656,10 +784,11 @@ function Calendar({ currentSpace, data, showToast, loadAll }) {
 
   async function addEvent(e) {
     e.preventDefault()
-    const { error } = await supabase.from('events').insert({ ...form, space_id: currentSpace.id, ends_at: form.ends_at || null })
+    const { data: created, error } = await supabase.from('events').insert({ ...form, space_id: currentSpace.id, ends_at: form.ends_at || null }).select('id,title').single()
     if (error) showToast(error.message)
     else {
       setForm({ title: '', starts_at: `${todayISO()}T21:30`, ends_at: '', location: '', category: 'generale', notes: '' })
+      sendPushNotification({ kind: 'event', title: 'Nuovo evento in agenda', body: created?.title || form.title, sourceTable: 'events', sourceId: created?.id })
       loadAll()
     }
   }
@@ -707,18 +836,19 @@ function Calendar({ currentSpace, data, showToast, loadAll }) {
   )
 }
 
-function Lists({ currentSpace, data, showToast, loadAll, memberName }) {
+function Lists({ currentSpace, data, showToast, loadAll, memberName, sendPushNotification }) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState('operativa')
   const [newItems, setNewItems] = useState({})
 
   async function createList(e) {
     e.preventDefault()
-    const { error } = await supabase.from('lists').insert({ title, type, space_id: currentSpace.id })
+    const { data: created, error } = await supabase.from('lists').insert({ title, type, space_id: currentSpace.id }).select('id,title').single()
     if (error) showToast(error.message)
     else {
       setTitle('')
       setType('operativa')
+      sendPushNotification({ kind: 'list', title: 'Nuova lista Orchidea', body: created?.title || title, sourceTable: 'lists', sourceId: created?.id })
       loadAll()
     }
   }
@@ -788,7 +918,7 @@ function Lists({ currentSpace, data, showToast, loadAll, memberName }) {
   )
 }
 
-function Notes({ currentSpace, data, showToast, loadAll }) {
+function Notes({ currentSpace, data, showToast, loadAll, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', folder: 'Generale', content: '', pinned: false })
   const [filter, setFilter] = useState('Tutte')
   const folders = ['Tutte', ...Array.from(new Set(data.notes.map((n) => n.folder || 'Generale')))]
@@ -796,10 +926,11 @@ function Notes({ currentSpace, data, showToast, loadAll }) {
 
   async function addNote(e) {
     e.preventDefault()
-    const { error } = await supabase.from('notes').insert({ ...form, space_id: currentSpace.id })
+    const { data: created, error } = await supabase.from('notes').insert({ ...form, space_id: currentSpace.id }).select('id,title').single()
     if (error) showToast(error.message)
     else {
       setForm({ title: '', folder: 'Generale', content: '', pinned: false })
+      sendPushNotification({ kind: 'note', title: 'Nuova nota Orchidea', body: created?.title || form.title, sourceTable: 'notes', sourceId: created?.id })
       loadAll()
     }
   }
@@ -850,7 +981,7 @@ function Notes({ currentSpace, data, showToast, loadAll }) {
   )
 }
 
-function Documents({ currentSpace, data, showToast, loadAll }) {
+function Documents({ currentSpace, data, showToast, loadAll, sendPushNotification }) {
   const [title, setTitle] = useState('')
   const [category, setCategory] = useState('Documenti')
   const [notes, setNotes] = useState('')
@@ -878,7 +1009,7 @@ function Documents({ currentSpace, data, showToast, loadAll }) {
       return
     }
 
-    const { error } = await supabase.from('documents').insert({
+    const { data: created, error } = await supabase.from('documents').insert({
       space_id: currentSpace.id,
       title: title || file.name,
       category,
@@ -886,7 +1017,7 @@ function Documents({ currentSpace, data, showToast, loadAll }) {
       file_path: path,
       file_name: file.name,
       file_size: file.size,
-    })
+    }).select('id,title').single()
 
     if (error) showToast(error.message)
     else {
@@ -895,6 +1026,7 @@ function Documents({ currentSpace, data, showToast, loadAll }) {
       setNotes('')
       setFile(null)
       e.target.reset()
+      sendPushNotification({ kind: 'document', title: 'Nuovo documento caricato', body: created?.title || title || file.name, sourceTable: 'documents', sourceId: created?.id })
       loadAll()
     }
     setBusy(false)
@@ -952,7 +1084,7 @@ function Documents({ currentSpace, data, showToast, loadAll }) {
   )
 }
 
-function Budget({ currentSpace, data, showToast, loadAll, memberName }) {
+function Budget({ currentSpace, data, showToast, loadAll, memberName, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', amount: '', category: 'generale', paid_by: '', paid_at: todayISO(), notes: '' })
   const total = data.expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0)
   const month = todayISO().slice(0, 7)
@@ -960,10 +1092,11 @@ function Budget({ currentSpace, data, showToast, loadAll, memberName }) {
 
   async function addExpense(e) {
     e.preventDefault()
-    const { error } = await supabase.from('expenses').insert({ ...form, amount: Number(form.amount || 0), paid_by: form.paid_by || null, space_id: currentSpace.id })
+    const { data: created, error } = await supabase.from('expenses').insert({ ...form, amount: Number(form.amount || 0), paid_by: form.paid_by || null, space_id: currentSpace.id }).select('id,title,amount').single()
     if (error) showToast(error.message)
     else {
       setForm({ title: '', amount: '', category: 'generale', paid_by: '', paid_at: todayISO(), notes: '' })
+      sendPushNotification({ kind: 'expense', title: 'Nuova spesa registrata', body: `${created?.title || form.title} · ${money(created?.amount || form.amount)}`, sourceTable: 'expenses', sourceId: created?.id })
       loadAll()
     }
   }
@@ -1007,15 +1140,16 @@ function Budget({ currentSpace, data, showToast, loadAll, memberName }) {
   )
 }
 
-function Announcements({ currentSpace, data, showToast, loadAll }) {
+function Announcements({ currentSpace, data, showToast, loadAll, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', body: '', importance: 'normale' })
 
   async function addAnnouncement(e) {
     e.preventDefault()
-    const { error } = await supabase.from('announcements').insert({ ...form, space_id: currentSpace.id })
+    const { data: created, error } = await supabase.from('announcements').insert({ ...form, space_id: currentSpace.id }).select('id,title,importance').single()
     if (error) showToast(error.message)
     else {
       setForm({ title: '', body: '', importance: 'normale' })
+      sendPushNotification({ kind: 'announcement', title: form.importance === 'urgente' ? 'Comunicazione URGENTE' : 'Nuova comunicazione', body: created?.title || form.title, priority: form.importance, sourceTable: 'announcements', sourceId: created?.id })
       loadAll()
     }
   }
@@ -1049,6 +1183,283 @@ function Announcements({ currentSpace, data, showToast, loadAll }) {
           </article>
         ))}
         {!data.announcements.length && <Empty text="Qui puoi lasciare comunicazioni importanti per il team." />}
+      </section>
+    </div>
+  )
+}
+
+
+function NotificationPanel({ notifications, onClose, onMarkRead }) {
+  return (
+    <div className="notification-panel">
+      <div className="panel-head compact-head">
+        <h3>Notifiche</h3>
+        <div>
+          <button className="ghost tiny" onClick={onMarkRead}>Segna lette</button>
+          <button className="icon-btn" onClick={onClose}>×</button>
+        </div>
+      </div>
+      <div className="notification-list">
+        {notifications.slice(0, 20).map((n) => (
+          <article key={n.id} className={n.read_at ? 'notification-item' : 'notification-item unread'}>
+            <strong>{n.title}</strong>
+            {n.body && <p>{n.body}</p>}
+            <small>{fmtDateTime(n.created_at)}</small>
+          </article>
+        ))}
+        {!notifications.length && <Empty text="Nessuna notifica per ora." />}
+      </div>
+    </div>
+  )
+}
+
+function Chat({ user, profile, showToast, sendPushNotification }) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [incoming, setIncoming] = useState([])
+  const [outgoing, setOutgoing] = useState([])
+  const [chats, setChats] = useState([])
+  const [selectedChat, setSelectedChat] = useState(null)
+  const [messages, setMessages] = useState([])
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    loadChatData()
+  }, [user?.id])
+
+  useEffect(() => {
+    if (!query.trim() || query.trim().length < 2) {
+      setResults([])
+      return
+    }
+    const t = window.setTimeout(searchUsers, 350)
+    return () => window.clearTimeout(t)
+  }, [query])
+
+  useEffect(() => {
+    if (!selectedChat?.id) {
+      setMessages([])
+      return
+    }
+    loadMessages(selectedChat)
+    const channel = supabase.channel(`chat-${selectedChat.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'direct_messages',
+        filter: `chat_id=eq.${selectedChat.id}`,
+      }, (payload) => {
+        setMessages((prev) => prev.some((m) => m.id === payload.new.id) ? prev : [...prev, payload.new])
+        if (payload.new.sender_id !== user.id) showToast('Nuovo messaggio in chat')
+      })
+      .subscribe()
+
+    return () => supabase.removeChannel(channel)
+  }, [selectedChat?.id, user?.id])
+
+  async function profilesByIds(ids) {
+    const clean = Array.from(new Set(ids.filter(Boolean)))
+    if (!clean.length) return []
+    const { data } = await supabase.from('profiles').select('id,full_name,email').in('id', clean)
+    return data || []
+  }
+
+  async function loadChatData() {
+    if (!user?.id) return
+    const [{ data: requests, error: reqError }, { data: rawChats, error: chatError }] = await Promise.all([
+      supabase.from('contact_requests').select('*').or(`requester_id.eq.${user.id},recipient_id.eq.${user.id}`).order('created_at', { ascending: false }),
+      supabase.from('direct_chats').select('*').or(`user_a.eq.${user.id},user_b.eq.${user.id}`).order('updated_at', { ascending: false }),
+    ])
+
+    if (reqError || chatError) {
+      showToast(reqError?.message || chatError?.message || 'Errore caricamento chat')
+      return
+    }
+
+    const reqRows = requests || []
+    const chatRows = rawChats || []
+    const ids = [
+      ...reqRows.flatMap((r) => [r.requester_id, r.recipient_id]),
+      ...chatRows.flatMap((c) => [c.user_a, c.user_b]),
+    ]
+    const profiles = await profilesByIds(ids)
+    const profileOf = (id) => profiles.find((p) => p.id === id) || null
+
+    setIncoming(reqRows.filter((r) => r.recipient_id === user.id && r.status === 'pending').map((r) => ({ ...r, requester: profileOf(r.requester_id) })))
+    setOutgoing(reqRows.filter((r) => r.requester_id === user.id && r.status === 'pending').map((r) => ({ ...r, recipient: profileOf(r.recipient_id) })))
+
+    const mappedChats = chatRows.map((c) => {
+      const otherId = c.user_a === user.id ? c.user_b : c.user_a
+      return { ...c, other_id: otherId, other: profileOf(otherId) }
+    })
+    setChats(mappedChats)
+    setSelectedChat((old) => old?.id ? mappedChats.find((c) => c.id === old.id) || mappedChats[0] || null : mappedChats[0] || null)
+  }
+
+  async function searchUsers() {
+    const q = query.trim().replace(/[%,]/g, '')
+    if (q.length < 2) return
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id,full_name,email')
+      .or(`full_name.ilike.%${q}%,email.ilike.%${q}%`)
+      .neq('id', user.id)
+      .limit(8)
+
+    if (error) showToast(error.message)
+    else setResults(data || [])
+  }
+
+  async function sendRequest(target) {
+    setBusy(true)
+    const { error } = await supabase.rpc('send_contact_request', { target_user_id: target.id })
+    if (error) showToast(error.message)
+    else {
+      showToast('Richiesta chat inviata')
+      sendPushNotification({
+        kind: 'contact_request',
+        title: 'Nuova richiesta chat',
+        body: `${profile?.full_name || 'Un utente'} vuole chattare con te`,
+        recipientIds: [target.id],
+      })
+      setQuery('')
+      setResults([])
+      loadChatData()
+    }
+    setBusy(false)
+  }
+
+  async function respondRequest(req, accept) {
+    setBusy(true)
+    const { error } = await supabase.rpc('respond_contact_request', { request_id: req.id, accept })
+    if (error) showToast(error.message)
+    else {
+      showToast(accept ? 'Richiesta accettata' : 'Richiesta rifiutata')
+      sendPushNotification({
+        kind: 'contact_response',
+        title: accept ? 'Richiesta chat accettata' : 'Richiesta chat rifiutata',
+        body: `${profile?.full_name || 'Un utente'} ha risposto alla tua richiesta`,
+        recipientIds: [req.requester_id],
+      })
+      loadChatData()
+    }
+    setBusy(false)
+  }
+
+  async function loadMessages(chat) {
+    const { data, error } = await supabase
+      .from('direct_messages')
+      .select('*')
+      .eq('chat_id', chat.id)
+      .order('created_at', { ascending: true })
+      .limit(200)
+
+    if (error) showToast(error.message)
+    else setMessages(data || [])
+  }
+
+  async function sendMessage(e) {
+    e.preventDefault()
+    const body = message.trim()
+    if (!body || !selectedChat?.id) return
+    setMessage('')
+    const { data: created, error } = await supabase
+      .from('direct_messages')
+      .insert({ chat_id: selectedChat.id, sender_id: user.id, body })
+      .select('id,body')
+      .single()
+
+    if (error) {
+      setMessage(body)
+      showToast(error.message)
+    } else {
+      setMessages((prev) => prev.some((m) => m.id === created.id) ? prev : [...prev, { ...created, chat_id: selectedChat.id, sender_id: user.id }])
+      sendPushNotification({
+        kind: 'chat',
+        title: `Messaggio da ${profile?.full_name || 'Orchidea'}`,
+        body: body.slice(0, 140),
+        sourceTable: 'direct_messages',
+        sourceId: created.id,
+        recipientIds: [selectedChat.other_id],
+      })
+      loadChatData()
+    }
+  }
+
+  const selectedOther = selectedChat?.other?.full_name || selectedChat?.other?.email || 'Chat'
+
+  return (
+    <div className="chat-layout">
+      <aside className="panel solid chat-sidebar">
+        <h2>Chat</h2>
+        <p className="muted-text">Aggiungi un utente con richiesta. La chat si apre solo se accetta.</p>
+        <Field label="Cerca utente" value={query} onChange={setQuery} placeholder="Nome o email" />
+        <div className="search-results">
+          {results.map((r) => (
+            <div key={r.id} className="contact-row">
+              <div><strong>{r.full_name || 'Utente'}</strong><span>{r.email || ''}</span></div>
+              <button disabled={busy} onClick={() => sendRequest(r)}>Richiedi</button>
+            </div>
+          ))}
+        </div>
+
+        {!!incoming.length && <h3>Richieste ricevute</h3>}
+        {incoming.map((r) => (
+          <div key={r.id} className="request-card">
+            <strong>{r.requester?.full_name || r.requester?.email || 'Utente'}</strong>
+            <span>Vuole chattare con te</span>
+            <div className="row-actions">
+              <button disabled={busy} onClick={() => respondRequest(r, true)}>Accetta</button>
+              <button disabled={busy} className="danger" onClick={() => respondRequest(r, false)}>Rifiuta</button>
+            </div>
+          </div>
+        ))}
+
+        {!!outgoing.length && <h3>Richieste inviate</h3>}
+        {outgoing.map((r) => (
+          <div key={r.id} className="request-card muted">
+            <strong>{r.recipient?.full_name || r.recipient?.email || 'Utente'}</strong>
+            <span>In attesa di risposta</span>
+          </div>
+        ))}
+
+        <h3>Conversazioni</h3>
+        <div className="chat-list">
+          {chats.map((chat) => (
+            <button key={chat.id} className={selectedChat?.id === chat.id ? 'chat-list-item active' : 'chat-list-item'} onClick={() => setSelectedChat(chat)}>
+              <span className="avatar small">{(chat.other?.full_name || chat.other?.email || 'U').slice(0, 1).toUpperCase()}</span>
+              <span>{chat.other?.full_name || chat.other?.email || 'Utente'}</span>
+            </button>
+          ))}
+          {!chats.length && <Empty text="Nessuna chat attiva. Cerca Laura o un altro utente e invia una richiesta." />}
+        </div>
+      </aside>
+
+      <section className="panel chat-main">
+        {selectedChat ? (
+          <>
+            <div className="chat-header">
+              <div className="avatar">{selectedOther.slice(0, 1).toUpperCase()}</div>
+              <div><h2>{selectedOther}</h2><span>Chat privata</span></div>
+            </div>
+            <div className="messages-list">
+              {messages.map((m) => (
+                <div key={m.id} className={m.sender_id === user.id ? 'message-bubble mine' : 'message-bubble'}>
+                  <p>{m.body}</p>
+                  <small>{fmtDateTime(m.created_at)}</small>
+                </div>
+              ))}
+              {!messages.length && <Empty text="Scrivi il primo messaggio." />}
+            </div>
+            <form className="message-form" onSubmit={sendMessage}>
+              <input value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Scrivi un messaggio..." />
+              <button className="primary">Invia</button>
+            </form>
+          </>
+        ) : (
+          <div className="empty-chat"><h2>Seleziona una chat</h2><p>Oppure cerca un utente e inviagli una richiesta.</p></div>
+        )}
       </section>
     </div>
   )
