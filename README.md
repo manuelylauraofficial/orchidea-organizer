@@ -211,3 +211,11 @@ git push
 Vercel pubblicherà automaticamente.
 
 Dopo aver aggiornato l'icona, su iPhone/Android può servire rimuovere e reinstallare l'app dalla schermata Home per vedere subito la nuova icona.
+
+## Update v8 - form puliti e modifica attività
+
+- I form di aggiunta ora sono chiusi di default in Attività, Agenda, Liste, Note, Documenti, Budget, Messaggi e Chat.
+- Ogni sezione ha un pulsante `+ Nuovo ...` che apre il form solo quando serve.
+- Dopo il salvataggio il form si richiude automaticamente.
+- Le attività pubblicate ora possono essere modificate dal pulsante `✎` sulla card.
+- La chat ha un pulsante `+ Nuova richiesta chat` per non tenere sempre visibile la ricerca utenti.

@@ -522,6 +522,7 @@ function AuthScreen() {
   const [password, setPassword] = useState('')
   const [signupPin, setSignupPin] = useState('')
   const [busy, setBusy] = useState(false)
+  const [requestOpen, setRequestOpen] = useState(false)
   const [message, setMessage] = useState('')
 
   async function submit(e) {
@@ -690,21 +691,70 @@ function Dashboard({ data, memberName, setActive }) {
 }
 
 function Tasks({ currentSpace, data, showToast, loadAll, memberName, sendPushNotification }) {
-  const [form, setForm] = useState({ title: '', description: '', priority: 'media', due_date: '', assigned_to: '' })
+  const emptyTask = { title: '', description: '', priority: 'media', due_date: '', assigned_to: '' }
+  const [form, setForm] = useState(emptyTask)
+  const [formOpen, setFormOpen] = useState(false)
+  const [editingTaskId, setEditingTaskId] = useState(null)
 
-  async function addTask(e) {
+  const isEditing = Boolean(editingTaskId)
+
+  function openNewTask() {
+    setEditingTaskId(null)
+    setForm(emptyTask)
+    setFormOpen(true)
+  }
+
+  function closeTaskForm() {
+    setEditingTaskId(null)
+    setForm(emptyTask)
+    setFormOpen(false)
+  }
+
+  function editTask(task) {
+    setEditingTaskId(task.id)
+    setForm({
+      title: task.title || '',
+      description: task.description || '',
+      priority: task.priority || 'media',
+      due_date: task.due_date || '',
+      assigned_to: task.assigned_to || '',
+    })
+    setFormOpen(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function saveTask(e) {
     e.preventDefault()
     const payload = {
-      ...form,
+      title: form.title.trim(),
+      description: form.description || '',
+      priority: form.priority,
       assigned_to: form.assigned_to || null,
       due_date: form.due_date || null,
-      space_id: currentSpace.id,
-      status: 'todo',
     }
-    const { data: created, error } = await supabase.from('tasks').insert(payload).select('id,title,priority').single()
+
+    if (!payload.title) return
+
+    if (isEditing) {
+      const { error } = await supabase.from('tasks').update(payload).eq('id', editingTaskId)
+      if (error) showToast(error.message)
+      else {
+        showToast('Attività aggiornata')
+        closeTaskForm()
+        loadAll()
+      }
+      return
+    }
+
+    const { data: created, error } = await supabase
+      .from('tasks')
+      .insert({ ...payload, space_id: currentSpace.id, status: 'todo' })
+      .select('id,title,priority')
+      .single()
+
     if (error) showToast(error.message)
     else {
-      setForm({ title: '', description: '', priority: 'media', due_date: '', assigned_to: '' })
+      closeTaskForm()
       sendPushNotification({ kind: 'task', title: 'Nuova attività Orchidea', body: created?.title || payload.title, priority: created?.priority || payload.priority, sourceTable: 'tasks', sourceId: created?.id })
       loadAll()
     }
@@ -719,23 +769,39 @@ function Tasks({ currentSpace, data, showToast, loadAll, memberName, sendPushNot
   async function deleteTask(id) {
     const { error } = await supabase.from('tasks').delete().eq('id', id)
     if (error) showToast(error.message)
-    else loadAll()
+    else {
+      if (editingTaskId === id) closeTaskForm()
+      loadAll()
+    }
   }
 
   return (
     <div className="work-area">
-      <form className="composer" onSubmit={addTask}>
-        <div className="composer-main">
-          <Field label="Nuova cosa da fare" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder="Es. chiamare SIAE, comprare ghiaccio, sistemare luci..." required />
-          <Field label="Note" value={form.description} onChange={(v) => setForm({ ...form, description: v })} placeholder="Dettagli veloci" />
-        </div>
-        <div className="composer-side">
-          <Select label="Priorità" value={form.priority} onChange={(v) => setForm({ ...form, priority: v })} options={['bassa','media','alta','urgente']} />
-          <Field label="Scadenza" type="date" value={form.due_date} onChange={(v) => setForm({ ...form, due_date: v })} />
-          <MemberSelect label="Assegna a" members={data.members} value={form.assigned_to} onChange={(v) => setForm({ ...form, assigned_to: v })} />
-          <button className="primary">Aggiungi</button>
-        </div>
-      </form>
+      <FormLauncher
+        open={formOpen}
+        title={isEditing ? 'Modifica attività' : 'Nuova attività'}
+        description={isEditing ? 'Aggiorna titolo, priorità, scadenza o assegnazione senza ricrearla.' : 'Aggiungi una cosa da fare solo quando ti serve, così la bacheca resta pulita.'}
+        buttonLabel="+ Nuova attività"
+        openLabel="Chiudi"
+        onOpen={openNewTask}
+        onClose={closeTaskForm}
+      >
+        <form className="composer embedded" onSubmit={saveTask}>
+          <div className="composer-main">
+            <Field label="Cosa da fare" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder="Es. chiamare SIAE, comprare ghiaccio, sistemare luci..." required />
+            <Field label="Note" value={form.description} onChange={(v) => setForm({ ...form, description: v })} placeholder="Dettagli veloci" />
+          </div>
+          <div className="composer-side">
+            <Select label="Priorità" value={form.priority} onChange={(v) => setForm({ ...form, priority: v })} options={['bassa','media','alta','urgente']} />
+            <Field label="Scadenza" type="date" value={form.due_date} onChange={(v) => setForm({ ...form, due_date: v })} />
+            <MemberSelect label="Assegna a" members={data.members} value={form.assigned_to} onChange={(v) => setForm({ ...form, assigned_to: v })} />
+            <div className="form-actions span-2">
+              <button type="button" className="ghost" onClick={closeTaskForm}>Annulla</button>
+              <button className="primary">{isEditing ? 'Salva modifiche' : 'Aggiungi'}</button>
+            </div>
+          </div>
+        </form>
+      </FormLauncher>
 
       <div className="kanban">
         {[
@@ -749,7 +815,10 @@ function Tasks({ currentSpace, data, showToast, loadAll, memberName, sendPushNot
               <article key={task.id} className={`task-card priority-${task.priority}`}>
                 <div className="task-head">
                   <strong>{task.title}</strong>
-                  <button className="icon-btn" onClick={() => deleteTask(task.id)}>×</button>
+                  <div className="icon-actions">
+                    <button className="icon-btn" title="Modifica attività" onClick={() => editTask(task)}>✎</button>
+                    <button className="icon-btn" title="Elimina attività" onClick={() => deleteTask(task.id)}>×</button>
+                  </div>
                 </div>
                 {task.description && <p>{task.description}</p>}
                 <div className="meta-row">
@@ -774,7 +843,9 @@ function Tasks({ currentSpace, data, showToast, loadAll, memberName, sendPushNot
 }
 
 function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification }) {
-  const [form, setForm] = useState({ title: '', starts_at: `${todayISO()}T21:30`, ends_at: '', location: '', category: 'generale', notes: '' })
+  const initialForm = { title: '', starts_at: `${todayISO()}T21:30`, ends_at: '', location: '', category: 'generale', notes: '' }
+  const [form, setForm] = useState(initialForm)
+  const [formOpen, setFormOpen] = useState(false)
   const [filterDay, setFilterDay] = useState('')
 
   const events = useMemo(() => {
@@ -787,7 +858,8 @@ function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification
     const { data: created, error } = await supabase.from('events').insert({ ...form, space_id: currentSpace.id, ends_at: form.ends_at || null }).select('id,title').single()
     if (error) showToast(error.message)
     else {
-      setForm({ title: '', starts_at: `${todayISO()}T21:30`, ends_at: '', location: '', category: 'generale', notes: '' })
+      setForm(initialForm)
+      setFormOpen(false)
       sendPushNotification({ kind: 'event', title: 'Nuovo evento in agenda', body: created?.title || form.title, sourceTable: 'events', sourceId: created?.id })
       loadAll()
     }
@@ -800,19 +872,35 @@ function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification
   }
 
   return (
-    <div className="two-col">
-      <form className="panel solid" onSubmit={addEvent}>
-        <h2>Nuovo evento</h2>
-        <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder="Serata, scadenza, riunione..." required />
-        <Field label="Inizio" type="datetime-local" value={form.starts_at} onChange={(v) => setForm({ ...form, starts_at: v })} required />
-        <Field label="Fine" type="datetime-local" value={form.ends_at} onChange={(v) => setForm({ ...form, ends_at: v })} />
-        <Field label="Luogo" value={form.location} onChange={(v) => setForm({ ...form, location: v })} placeholder="Orchidea / estivo / online" />
-        <Field label="Categoria" value={form.category} onChange={(v) => setForm({ ...form, category: v })} placeholder="serata, corsi, scadenza..." />
-        <Textarea label="Note" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} />
-        <button className="primary">Salva evento</button>
-      </form>
+    <div className="work-area">
+      <FormLauncher
+        open={formOpen}
+        title="Nuovo evento"
+        description="Apri il modulo solo quando devi inserire una serata, una scadenza o una riunione."
+        buttonLabel="+ Nuovo evento"
+        openLabel="Chiudi"
+        onOpen={() => setFormOpen(true)}
+        onClose={() => setFormOpen(false)}
+      >
+        <form className="panel-form" onSubmit={addEvent}>
+          <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder="Serata, scadenza, riunione..." required />
+          <div className="form-grid two-fields">
+            <Field label="Inizio" type="datetime-local" value={form.starts_at} onChange={(v) => setForm({ ...form, starts_at: v })} required />
+            <Field label="Fine" type="datetime-local" value={form.ends_at} onChange={(v) => setForm({ ...form, ends_at: v })} />
+          </div>
+          <div className="form-grid two-fields">
+            <Field label="Luogo" value={form.location} onChange={(v) => setForm({ ...form, location: v })} placeholder="Orchidea / estivo / online" />
+            <Field label="Categoria" value={form.category} onChange={(v) => setForm({ ...form, category: v })} placeholder="serata, corsi, scadenza..." />
+          </div>
+          <Textarea label="Note" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} />
+          <div className="form-actions">
+            <button type="button" className="ghost" onClick={() => setFormOpen(false)}>Annulla</button>
+            <button className="primary">Salva evento</button>
+          </div>
+        </form>
+      </FormLauncher>
 
-      <section className="panel">
+      <section className="panel content-panel">
         <div className="panel-head">
           <h2>Agenda condivisa</h2>
           <input type="date" value={filterDay} onChange={(e) => setFilterDay(e.target.value)} />
@@ -839,6 +927,7 @@ function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification
 function Lists({ currentSpace, data, showToast, loadAll, memberName, sendPushNotification }) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState('operativa')
+  const [formOpen, setFormOpen] = useState(false)
   const [newItems, setNewItems] = useState({})
 
   async function createList(e) {
@@ -848,6 +937,7 @@ function Lists({ currentSpace, data, showToast, loadAll, memberName, sendPushNot
     else {
       setTitle('')
       setType('operativa')
+      setFormOpen(false)
       sendPushNotification({ kind: 'list', title: 'Nuova lista Orchidea', body: created?.title || title, sourceTable: 'lists', sourceId: created?.id })
       loadAll()
     }
@@ -884,11 +974,24 @@ function Lists({ currentSpace, data, showToast, loadAll, memberName, sendPushNot
 
   return (
     <div className="work-area">
-      <form className="composer compact" onSubmit={createList}>
-        <Field label="Nuova lista" value={title} onChange={setTitle} placeholder="Es. Spesa bar, lavori da fare, idee eventi..." required />
-        <Field label="Tipo" value={type} onChange={setType} placeholder="operativa / acquisti / idee" />
-        <button className="primary">Crea lista</button>
-      </form>
+      <FormLauncher
+        open={formOpen}
+        title="Nuova lista"
+        description="Liste per spesa, lavori, idee eventi o materiali da controllare."
+        buttonLabel="+ Nuova lista"
+        openLabel="Chiudi"
+        onOpen={() => setFormOpen(true)}
+        onClose={() => setFormOpen(false)}
+      >
+        <form className="composer compact embedded" onSubmit={createList}>
+          <Field label="Titolo lista" value={title} onChange={setTitle} placeholder="Es. Spesa bar, lavori da fare, idee eventi..." required />
+          <Field label="Tipo" value={type} onChange={setType} placeholder="operativa / acquisti / idee" />
+          <div className="form-actions compact-actions">
+            <button type="button" className="ghost" onClick={() => setFormOpen(false)}>Annulla</button>
+            <button className="primary">Crea lista</button>
+          </div>
+        </form>
+      </FormLauncher>
 
       <div className="cards-grid">
         {data.lists.map((list) => (
@@ -920,6 +1023,7 @@ function Lists({ currentSpace, data, showToast, loadAll, memberName, sendPushNot
 
 function Notes({ currentSpace, data, showToast, loadAll, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', folder: 'Generale', content: '', pinned: false })
+  const [formOpen, setFormOpen] = useState(false)
   const [filter, setFilter] = useState('Tutte')
   const folders = ['Tutte', ...Array.from(new Set(data.notes.map((n) => n.folder || 'Generale')))]
   const notes = filter === 'Tutte' ? data.notes : data.notes.filter((n) => n.folder === filter)
@@ -930,6 +1034,7 @@ function Notes({ currentSpace, data, showToast, loadAll, sendPushNotification })
     if (error) showToast(error.message)
     else {
       setForm({ title: '', folder: 'Generale', content: '', pinned: false })
+      setFormOpen(false)
       sendPushNotification({ kind: 'note', title: 'Nuova nota Orchidea', body: created?.title || form.title, sourceTable: 'notes', sourceId: created?.id })
       loadAll()
     }
@@ -948,17 +1053,31 @@ function Notes({ currentSpace, data, showToast, loadAll, sendPushNotification })
   }
 
   return (
-    <div className="two-col notes-layout">
-      <form className="panel solid" onSubmit={addNote}>
-        <h2>Nuova nota</h2>
-        <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} required />
-        <Field label="Cartella" value={form.folder} onChange={(v) => setForm({ ...form, folder: v })} placeholder="Es. Estivo, Fornitori, Idee..." />
-        <Textarea label="Contenuto" value={form.content} onChange={(v) => setForm({ ...form, content: v })} />
-        <label className="switch-line"><input type="checkbox" checked={form.pinned} onChange={(e) => setForm({ ...form, pinned: e.target.checked })} /> Fissa in alto</label>
-        <button className="primary">Salva nota</button>
-      </form>
+    <div className="work-area">
+      <FormLauncher
+        open={formOpen}
+        title="Nuova nota"
+        description="Scrivi appunti e fissali in alto solo quando serve."
+        buttonLabel="+ Nuova nota"
+        openLabel="Chiudi"
+        onOpen={() => setFormOpen(true)}
+        onClose={() => setFormOpen(false)}
+      >
+        <form className="panel-form" onSubmit={addNote}>
+          <div className="form-grid two-fields">
+            <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} required />
+            <Field label="Cartella" value={form.folder} onChange={(v) => setForm({ ...form, folder: v })} placeholder="Es. Estivo, Fornitori, Idee..." />
+          </div>
+          <Textarea label="Contenuto" value={form.content} onChange={(v) => setForm({ ...form, content: v })} />
+          <label className="switch-line"><input type="checkbox" checked={form.pinned} onChange={(e) => setForm({ ...form, pinned: e.target.checked })} /> Fissa in alto</label>
+          <div className="form-actions">
+            <button type="button" className="ghost" onClick={() => setFormOpen(false)}>Annulla</button>
+            <button className="primary">Salva nota</button>
+          </div>
+        </form>
+      </FormLauncher>
 
-      <section className="panel">
+      <section className="panel content-panel">
         <div className="folder-tabs">
           {folders.map((folder) => <button key={folder} className={filter === folder ? 'active' : ''} onClick={() => setFilter(folder)}>{folder}</button>)}
         </div>
@@ -987,6 +1106,7 @@ function Documents({ currentSpace, data, showToast, loadAll, sendPushNotificatio
   const [notes, setNotes] = useState('')
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [formOpen, setFormOpen] = useState(false)
 
   async function uploadDocument(e) {
     e.preventDefault()
@@ -1026,6 +1146,7 @@ function Documents({ currentSpace, data, showToast, loadAll, sendPushNotificatio
       setNotes('')
       setFile(null)
       e.target.reset()
+      setFormOpen(false)
       sendPushNotification({ kind: 'document', title: 'Nuovo documento caricato', body: created?.title || title || file.name, sourceTable: 'documents', sourceId: created?.id })
       loadAll()
     }
@@ -1050,17 +1171,31 @@ function Documents({ currentSpace, data, showToast, loadAll, sendPushNotificatio
   }
 
   return (
-    <div className="two-col">
-      <form className="panel solid" onSubmit={uploadDocument}>
-        <h2>Carica documento</h2>
-        <Field label="Titolo" value={title} onChange={setTitle} placeholder="Contratto, preventivo, SIAE..." />
-        <Field label="Categoria" value={category} onChange={setCategory} />
-        <Textarea label="Note" value={notes} onChange={setNotes} />
-        <label className="field"><span>File</span><input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></label>
-        <button className="primary" disabled={busy}>{busy ? 'Carico…' : 'Carica'}</button>
-      </form>
+    <div className="work-area">
+      <FormLauncher
+        open={formOpen}
+        title="Carica documento"
+        description="Contratti, preventivi, SIAE o file utili restano ordinati nella sezione documenti."
+        buttonLabel="+ Nuovo documento"
+        openLabel="Chiudi"
+        onOpen={() => setFormOpen(true)}
+        onClose={() => setFormOpen(false)}
+      >
+        <form className="panel-form" onSubmit={uploadDocument}>
+          <div className="form-grid two-fields">
+            <Field label="Titolo" value={title} onChange={setTitle} placeholder="Contratto, preventivo, SIAE..." />
+            <Field label="Categoria" value={category} onChange={setCategory} />
+          </div>
+          <Textarea label="Note" value={notes} onChange={setNotes} />
+          <label className="field"><span>File</span><input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} /></label>
+          <div className="form-actions">
+            <button type="button" className="ghost" onClick={() => setFormOpen(false)}>Annulla</button>
+            <button className="primary" disabled={busy}>{busy ? 'Carico…' : 'Carica'}</button>
+          </div>
+        </form>
+      </FormLauncher>
 
-      <section className="panel">
+      <section className="panel content-panel">
         <div className="documents-grid">
           {data.documents.map((doc) => (
             <article key={doc.id} className="doc-card">
@@ -1086,6 +1221,7 @@ function Documents({ currentSpace, data, showToast, loadAll, sendPushNotificatio
 
 function Budget({ currentSpace, data, showToast, loadAll, memberName, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', amount: '', category: 'generale', paid_by: '', paid_at: todayISO(), notes: '' })
+  const [formOpen, setFormOpen] = useState(false)
   const total = data.expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0)
   const month = todayISO().slice(0, 7)
   const monthTotal = data.expenses.filter((e) => e.paid_at?.slice(0, 7) === month).reduce((sum, e) => sum + Number(e.amount || 0), 0)
@@ -1096,6 +1232,7 @@ function Budget({ currentSpace, data, showToast, loadAll, memberName, sendPushNo
     if (error) showToast(error.message)
     else {
       setForm({ title: '', amount: '', category: 'generale', paid_by: '', paid_at: todayISO(), notes: '' })
+      setFormOpen(false)
       sendPushNotification({ kind: 'expense', title: 'Nuova spesa registrata', body: `${created?.title || form.title} · ${money(created?.amount || form.amount)}`, sourceTable: 'expenses', sourceId: created?.id })
       loadAll()
     }
@@ -1108,19 +1245,35 @@ function Budget({ currentSpace, data, showToast, loadAll, memberName, sendPushNo
   }
 
   return (
-    <div className="two-col">
-      <form className="panel solid" onSubmit={addExpense}>
-        <h2>Nuova spesa</h2>
-        <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} required />
-        <Field label="Importo" type="number" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} required />
-        <Field label="Categoria" value={form.category} onChange={(v) => setForm({ ...form, category: v })} />
-        <Field label="Data" type="date" value={form.paid_at} onChange={(v) => setForm({ ...form, paid_at: v })} />
-        <MemberSelect label="Pagato da" members={data.members} value={form.paid_by} onChange={(v) => setForm({ ...form, paid_by: v })} />
-        <Textarea label="Note" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} />
-        <button className="primary">Registra</button>
-      </form>
+    <div className="work-area">
+      <FormLauncher
+        open={formOpen}
+        title="Nuova spesa"
+        description="Registra le spese solo quando serve e lascia visibili subito i totali."
+        buttonLabel="+ Nuova spesa"
+        openLabel="Chiudi"
+        onOpen={() => setFormOpen(true)}
+        onClose={() => setFormOpen(false)}
+      >
+        <form className="panel-form" onSubmit={addExpense}>
+          <div className="form-grid two-fields">
+            <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} required />
+            <Field label="Importo" type="number" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} required />
+          </div>
+          <div className="form-grid three-fields">
+            <Field label="Categoria" value={form.category} onChange={(v) => setForm({ ...form, category: v })} />
+            <Field label="Data" type="date" value={form.paid_at} onChange={(v) => setForm({ ...form, paid_at: v })} />
+            <MemberSelect label="Pagato da" members={data.members} value={form.paid_by} onChange={(v) => setForm({ ...form, paid_by: v })} />
+          </div>
+          <Textarea label="Note" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} />
+          <div className="form-actions">
+            <button type="button" className="ghost" onClick={() => setFormOpen(false)}>Annulla</button>
+            <button className="primary">Registra</button>
+          </div>
+        </form>
+      </FormLauncher>
 
-      <section className="panel">
+      <section className="panel content-panel">
         <div className="budget-stats">
           <StatCard title="Totale storico" value={money(total)} note="Tutte le spese" icon="💶" />
           <StatCard title="Questo mese" value={money(monthTotal)} note="Spese mese corrente" icon="📆" />
@@ -1142,6 +1295,7 @@ function Budget({ currentSpace, data, showToast, loadAll, memberName, sendPushNo
 
 function Announcements({ currentSpace, data, showToast, loadAll, sendPushNotification }) {
   const [form, setForm] = useState({ title: '', body: '', importance: 'normale' })
+  const [formOpen, setFormOpen] = useState(false)
 
   async function addAnnouncement(e) {
     e.preventDefault()
@@ -1149,6 +1303,7 @@ function Announcements({ currentSpace, data, showToast, loadAll, sendPushNotific
     if (error) showToast(error.message)
     else {
       setForm({ title: '', body: '', importance: 'normale' })
+      setFormOpen(false)
       sendPushNotification({ kind: 'announcement', title: form.importance === 'urgente' ? 'Comunicazione URGENTE' : 'Nuova comunicazione', body: created?.title || form.title, priority: form.importance, sourceTable: 'announcements', sourceId: created?.id })
       loadAll()
     }
@@ -1161,16 +1316,30 @@ function Announcements({ currentSpace, data, showToast, loadAll, sendPushNotific
   }
 
   return (
-    <div className="two-col">
-      <form className="panel solid" onSubmit={addAnnouncement}>
-        <h2>Nuova comunicazione</h2>
-        <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} required />
-        <Select label="Importanza" value={form.importance} onChange={(v) => setForm({ ...form, importance: v })} options={['normale','importante','urgente']} />
-        <Textarea label="Messaggio" value={form.body} onChange={(v) => setForm({ ...form, body: v })} />
-        <button className="primary">Pubblica</button>
-      </form>
+    <div className="work-area">
+      <FormLauncher
+        open={formOpen}
+        title="Nuova comunicazione"
+        description="Messaggi importanti per il team senza tenere il modulo sempre aperto."
+        buttonLabel="+ Nuovo messaggio"
+        openLabel="Chiudi"
+        onOpen={() => setFormOpen(true)}
+        onClose={() => setFormOpen(false)}
+      >
+        <form className="panel-form" onSubmit={addAnnouncement}>
+          <div className="form-grid two-fields">
+            <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} required />
+            <Select label="Importanza" value={form.importance} onChange={(v) => setForm({ ...form, importance: v })} options={['normale','importante','urgente']} />
+          </div>
+          <Textarea label="Messaggio" value={form.body} onChange={(v) => setForm({ ...form, body: v })} />
+          <div className="form-actions">
+            <button type="button" className="ghost" onClick={() => setFormOpen(false)}>Annulla</button>
+            <button className="primary">Pubblica</button>
+          </div>
+        </form>
+      </FormLauncher>
 
-      <section className="panel wall-feed">
+      <section className="panel wall-feed content-panel">
         {data.announcements.map((item) => (
           <article key={item.id} className={`announcement importance-${item.importance}`}>
             <div className="task-head">
@@ -1394,15 +1563,23 @@ function Chat({ user, profile, showToast, sendPushNotification }) {
       <aside className="panel solid chat-sidebar">
         <h2>Chat</h2>
         <p className="muted-text">Aggiungi un utente con richiesta. La chat si apre solo se accetta.</p>
-        <Field label="Cerca utente" value={query} onChange={setQuery} placeholder="Nome o email" />
-        <div className="search-results">
-          {results.map((r) => (
-            <div key={r.id} className="contact-row">
-              <div><strong>{r.full_name || 'Utente'}</strong><span>{r.email || ''}</span></div>
-              <button disabled={busy} onClick={() => sendRequest(r)}>Richiedi</button>
+        <button type="button" className={requestOpen ? 'ghost chat-new-btn' : 'primary chat-new-btn'} onClick={() => setRequestOpen((v) => !v)}>
+          {requestOpen ? 'Chiudi richiesta' : '+ Nuova richiesta chat'}
+        </button>
+        {requestOpen && (
+          <div className="chat-request-box">
+            <Field label="Cerca utente" value={query} onChange={setQuery} placeholder="Nome o email" />
+            <div className="search-results">
+              {results.map((r) => (
+                <div key={r.id} className="contact-row">
+                  <div><strong>{r.full_name || 'Utente'}</strong><span>{r.email || ''}</span></div>
+                  <button disabled={busy} onClick={() => sendRequest(r)}>Richiedi</button>
+                </div>
+              ))}
+              {query.trim().length >= 2 && !results.length && <Empty text="Nessun utente trovato." />}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
 
         {!!incoming.length && <h3>Richieste ricevute</h3>}
         {incoming.map((r) => (
@@ -1507,6 +1684,24 @@ function Settings({ currentSpace, data, showToast, reloadSpaces }) {
         </div>
       </section>
     </div>
+  )
+}
+
+function FormLauncher({ open, title, description, buttonLabel, openLabel = 'Chiudi', onOpen, onClose, children }) {
+  return (
+    <section className={open ? 'form-launcher open' : 'form-launcher'}>
+      <div className="form-launcher-head">
+        <div>
+          <span className="tag">Aggiungi</span>
+          <h2>{title}</h2>
+          {description && <p>{description}</p>}
+        </div>
+        <button type="button" className={open ? 'ghost launcher-btn' : 'primary launcher-btn'} onClick={open ? onClose : onOpen}>
+          {open ? openLabel : buttonLabel}
+        </button>
+      </div>
+      {open && <div className="form-launcher-body">{children}</div>}
+    </section>
   )
 }
 

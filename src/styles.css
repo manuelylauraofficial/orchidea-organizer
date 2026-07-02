@@ -463,3 +463,124 @@ button.tiny { padding: 8px 10px; font-size: .78rem; border-radius: 12px; }
   .message-form { grid-template-columns: 1fr; }
   .chat-main { min-height: 560px; }
 }
+
+/* Update v8: form chiusi di default e modifica attività */
+.form-launcher {
+  padding: 18px;
+  border-radius: var(--radius);
+  background: rgba(255,255,255,.78);
+  border: 1px solid rgba(255,255,255,.8);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(22px);
+}
+.form-launcher-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.form-launcher-head h2 {
+  margin: 8px 0 4px;
+  letter-spacing: -.04em;
+}
+.form-launcher-head p {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 750;
+  line-height: 1.45;
+  max-width: 760px;
+}
+.launcher-btn {
+  width: auto;
+  min-width: 170px;
+  white-space: nowrap;
+}
+.form-launcher-body {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(32,32,42,.08);
+}
+.composer.embedded,
+.form-launcher .panel-form {
+  box-shadow: none;
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
+  padding: 0;
+}
+.panel-form {
+  display: grid;
+  gap: 14px;
+}
+.form-grid {
+  display: grid;
+  gap: 14px;
+}
+.form-grid.two-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.form-grid.three-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.form-actions .primary,
+.form-actions .ghost {
+  width: auto;
+  min-width: 145px;
+}
+.form-actions.span-2 {
+  grid-column: 1 / -1;
+}
+.compact-actions {
+  align-self: end;
+}
+.content-panel {
+  grid-column: auto;
+  width: 100%;
+}
+.icon-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.icon-actions .icon-btn:first-child {
+  color: var(--orchid);
+  background: rgba(193,24,134,.1);
+}
+.chat-new-btn {
+  width: 100%;
+  margin-top: 2px;
+}
+.chat-request-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 20px;
+  background: rgba(255,255,255,.62);
+  border: 1px solid rgba(32,32,42,.07);
+}
+
+@media (max-width: 920px) {
+  .form-launcher-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .launcher-btn,
+  .form-actions .primary,
+  .form-actions .ghost {
+    width: 100%;
+  }
+  .form-grid.two-fields,
+  .form-grid.three-fields {
+    grid-template-columns: 1fr;
+  }
+  .form-actions {
+    flex-direction: column-reverse;
+  }
+}
