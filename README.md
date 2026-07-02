@@ -108,3 +108,24 @@ Poi in Supabase vai in **Authentication → URL Configuration** e imposta:
   - eventuale dominio personalizzato, ad esempio `https://app.orchidea.../**`
 
 L'app passa `emailRedirectTo` durante la registrazione, così il link di conferma email usa l'URL pubblico e non quello locale.
+
+## Update v5: notifiche, priorità e icona app
+
+Questa versione aggiunge:
+
+- pulsante 🔔 nella barra in alto per abilitare le notifiche del browser/app
+- avviso in tempo reale quando un altro membro aggiunge attività, eventi, note, liste, documenti, spese o messaggi
+- colori più visibili per priorità `bassa`, `media`, `alta`, `urgente`
+- schermata di caricamento corretta: non lampeggia più la pagina “Crea spazio / Entra con codice” durante l'accesso
+- manifest PWA e icona app usando `public/image/icon.png`
+- service worker leggero per aprire/focalizzare l'app quando si clicca una notifica
+
+Nota: senza backend di notifiche push, le notifiche arrivano quando l'app è aperta, installata o comunque attiva nel browser. Per notifiche garantite anche con app completamente chiusa serve uno step successivo con Web Push e una Edge Function Supabase.
+
+Se le notifiche realtime non arrivano tra utenti, esegui anche:
+
+```sql
+supabase/enable_realtime_notifications.sql
+```
+
+Dopo aver aggiornato l'icona, su iPhone/Android può servire rimuovere e reinstallare l'app dalla schermata Home per vedere subito la nuova icona.

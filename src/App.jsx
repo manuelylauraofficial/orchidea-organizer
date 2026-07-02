@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './lib/supabase'
 
 const TABS = [
@@ -18,16 +18,52 @@ const fmtDate = (value) => value ? new Date(value).toLocaleDateString('it-IT', {
 const fmtDateTime = (value) => value ? new Date(value).toLocaleString('it-IT', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
 const money = (n) => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(Number(n || 0))
 
+const NOTIFICATION_TABLES = {
+  tasks: { label: 'attività', field: 'title', icon: '✅' },
+  events: { label: 'evento in agenda', field: 'title', icon: '📅' },
+  notes: { label: 'nota', field: 'title', icon: '📝' },
+  lists: { label: 'lista', field: 'title', icon: '🧾' },
+  documents: { label: 'documento', field: 'title', icon: '📂' },
+  expenses: { label: 'spesa', field: 'title', icon: '💶' },
+  announcements: { label: 'messaggio', field: 'title', icon: '📣' },
+}
+
+function canUseBrowserNotifications() {
+  return typeof window !== 'undefined' && 'Notification' in window
+}
+
+function getNotificationPermission() {
+  if (!canUseBrowserNotifications()) return 'unsupported'
+  return window.Notification.permission
+}
+
+async function showBrowserNotification(title, options) {
+  if (getNotificationPermission() !== 'granted') return
+
+  if ('serviceWorker' in navigator) {
+    const registration = await navigator.serviceWorker.ready
+    if (registration?.showNotification) {
+      await registration.showNotification(title, options)
+      return
+    }
+  }
+
+  new window.Notification(title, options)
+}
+
 function App() {
   const missingEnv = !import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [profile, setProfile] = useState(null)
   const [spaces, setSpaces] = useState([])
   const [currentSpace, setCurrentSpace] = useState(null)
   const [active, setActive] = useState('dashboard')
   const [toast, setToast] = useState('')
   const [refreshing, setRefreshing] = useState(false)
+  const [notificationPermission, setNotificationPermission] = useState(getNotificationPermission)
+  const membersRef = useRef([])
   const [data, setData] = useState({
     tasks: [], events: [], notes: [], lists: [], documents: [], expenses: [], announcements: [], members: []
   })
@@ -35,11 +71,16 @@ function App() {
   const user = session?.user || null
 
   useEffect(() => {
+    membersRef.current = data.members
+  }, [data.members])
+
+  useEffect(() => {
     let mounted = true
 
     async function init() {
       const { data: sessionData } = await supabase.auth.getSession()
       if (mounted) {
+        if (sessionData.session?.user) setWorkspaceLoading(true)
         setSession(sessionData.session)
         setLoading(false)
       }
@@ -49,10 +90,12 @@ function App() {
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession)
+      if (nextSession?.user) setWorkspaceLoading(true)
       if (!nextSession) {
         setProfile(null)
         setSpaces([])
         setCurrentSpace(null)
+        setWorkspaceLoading(false)
         setData({ tasks: [], events: [], notes: [], lists: [], documents: [], expenses: [], announcements: [], members: [] })
       }
     })
@@ -64,7 +107,10 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!user) return
+    if (!user) {
+      setWorkspaceLoading(false)
+      return
+    }
     ensureProfileAndSpaces(user)
   }, [user?.id])
 
@@ -72,7 +118,7 @@ function App() {
     if (!currentSpace?.id) return
     loadAll(currentSpace.id)
 
-    const tables = ['tasks', 'events', 'notes', 'lists', 'documents', 'expenses', 'announcements']
+    const tables = Object.keys(NOTIFICATION_TABLES)
     const channel = supabase.channel(`space-${currentSpace.id}`)
 
     tables.forEach((table) => {
@@ -81,7 +127,10 @@ function App() {
         schema: 'public',
         table,
         filter: `space_id=eq.${currentSpace.id}`,
-      }, () => loadAll(currentSpace.id))
+      }, (payload) => {
+        handleRealtimeChange(table, payload)
+        loadAll(currentSpace.id)
+      })
     })
 
     channel.on('postgres_changes', { event: '*', schema: 'public', table: 'list_items' }, () => loadAll(currentSpace.id))
@@ -89,36 +138,86 @@ function App() {
     channel.subscribe()
 
     return () => supabase.removeChannel(channel)
-  }, [currentSpace?.id])
+  }, [currentSpace?.id, user?.id])
 
   function showToast(message) {
     setToast(message)
     window.setTimeout(() => setToast(''), 2600)
   }
 
-  async function ensureProfileAndSpaces(currentUser) {
-    const defaultName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Utente Orchidea'
-
-    const { data: existingProfile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', currentUser.id)
-      .maybeSingle()
-
-    if (!existingProfile) {
-      const { data: newProfile, error } = await supabase
-        .from('profiles')
-        .insert({ id: currentUser.id, full_name: defaultName })
-        .select()
-        .single()
-
-      if (error) showToast(error.message)
-      setProfile(newProfile || { id: currentUser.id, full_name: defaultName })
-    } else {
-      setProfile(existingProfile)
+  async function requestNotifications() {
+    if (!canUseBrowserNotifications()) {
+      showToast('Questo dispositivo o browser non supporta le notifiche locali.')
+      return
     }
 
-    await loadSpaces(currentUser.id)
+    const permission = await window.Notification.requestPermission()
+    setNotificationPermission(permission)
+
+    if (permission === 'granted') {
+      showToast('Notifiche attivate. Ti avviso quando Laura o un altro utente aggiunge qualcosa.')
+    } else {
+      showToast('Notifiche non attivate. Puoi abilitarle dalle impostazioni del browser.')
+    }
+  }
+
+  function handleRealtimeChange(table, payload) {
+    if (payload.eventType !== 'INSERT') return
+
+    const row = payload.new || {}
+    if (!row.created_by || row.created_by === user?.id) return
+
+    const tableInfo = NOTIFICATION_TABLES[table]
+    if (!tableInfo) return
+
+    const author = membersRef.current.find((m) => m.user_id === row.created_by)?.profile?.full_name || 'Un utente'
+    const itemTitle = row[tableInfo.field] || row.title || 'Nuovo elemento'
+    const notificationTitle = `${tableInfo.icon} ${author} ha aggiunto un ${tableInfo.label}`
+    const body = String(itemTitle).slice(0, 120)
+
+    showToast(`${author} ha aggiunto: ${body}`)
+
+    if (getNotificationPermission() === 'granted') {
+      showBrowserNotification(notificationTitle, {
+        body,
+        icon: '/image/icon.png',
+        badge: '/image/icon.png',
+        tag: `${table}-${row.id}`,
+        data: { url: '/' },
+      }).catch(() => {
+        // Alcuni browser mobile possono bloccare le notifiche locali.
+      })
+    }
+  }
+
+  async function ensureProfileAndSpaces(currentUser) {
+    setWorkspaceLoading(true)
+    const defaultName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'Utente Orchidea'
+
+    try {
+      const { data: existingProfile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', currentUser.id)
+        .maybeSingle()
+
+      if (!existingProfile) {
+        const { data: newProfile, error } = await supabase
+          .from('profiles')
+          .insert({ id: currentUser.id, full_name: defaultName })
+          .select()
+          .single()
+
+        if (error) showToast(error.message)
+        setProfile(newProfile || { id: currentUser.id, full_name: defaultName })
+      } else {
+        setProfile(existingProfile)
+      }
+
+      await loadSpaces(currentUser.id)
+    } finally {
+      setWorkspaceLoading(false)
+    }
   }
 
   async function loadSpaces(userId = user?.id) {
@@ -190,11 +289,14 @@ function App() {
     showToast,
     loadAll: () => currentSpace?.id && loadAll(currentSpace.id),
     memberName: (id) => data.members.find((m) => m.user_id === id)?.profile?.full_name || 'Non assegnato',
+    requestNotifications,
+    notificationPermission,
   }
 
   if (loading) return <Splash text="Carico Orchidea Organizer…" />
   if (missingEnv) return <SetupMissing />
   if (!session) return <AuthScreen />
+  if (workspaceLoading) return <Splash text="Apro il tuo spazio Orchidea…" />
   if (!currentSpace) return <Onboarding user={user} onDone={() => loadSpaces(user.id)} showToast={showToast} />
 
   return (
@@ -232,6 +334,9 @@ function App() {
           </div>
           <div className="topbar-actions">
             <span className={`sync-dot ${refreshing ? 'loading' : ''}`}></span>
+            <button className={`notify-toggle ${notificationPermission === 'granted' ? 'enabled' : ''}`} onClick={requestNotifications} title={notificationPermission === 'granted' ? 'Notifiche attive' : 'Attiva notifiche'}>
+              {notificationPermission === 'granted' ? '🔔' : '🔕'}
+            </button>
             <button className="ghost" onClick={() => loadAll(currentSpace.id)}>Aggiorna</button>
             <div className="avatar">{(profile?.full_name || user.email || 'O').slice(0, 1).toUpperCase()}</div>
           </div>
@@ -520,8 +625,8 @@ function Tasks({ currentSpace, data, showToast, loadAll, memberName }) {
                 </div>
                 {task.description && <p>{task.description}</p>}
                 <div className="meta-row">
-                  <span>{task.priority}</span>
-                  <span>{fmtDate(task.due_date)}</span>
+                  <span className={`priority-chip priority-chip-${task.priority}`}>{task.priority}</span>
+                  {task.due_date && <span className="date-chip">{fmtDate(task.due_date)}</span>}
                 </div>
                 <div className="task-footer">
                   <small>{memberName(task.assigned_to)}</small>
@@ -935,7 +1040,7 @@ function Announcements({ currentSpace, data, showToast, loadAll }) {
         {data.announcements.map((item) => (
           <article key={item.id} className={`announcement importance-${item.importance}`}>
             <div className="task-head">
-              <span className="tag">{item.importance}</span>
+              <span className={`tag importance-tag importance-${item.importance}`}>{item.importance}</span>
               <button className="icon-btn" onClick={() => deleteAnnouncement(item.id)}>×</button>
             </div>
             <h3>{item.title}</h3>
@@ -1003,7 +1108,12 @@ function Panel({ title, action, children }) {
 }
 
 function TaskMini({ task, memberName }) {
-  return <div className="mini-item"><b>{task.title}</b><span>{task.priority} · {fmtDate(task.due_date)} · {memberName(task.assigned_to)}</span></div>
+  return (
+    <div className="mini-item">
+      <b>{task.title}</b>
+      <span><em className={`priority-chip mini priority-chip-${task.priority}`}>{task.priority}</em> {fmtDate(task.due_date)} · {memberName(task.assigned_to)}</span>
+    </div>
+  )
 }
 
 function EventMini({ event }) {

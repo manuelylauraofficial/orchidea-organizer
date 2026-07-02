@@ -1,0 +1,25 @@
+{
+  "name": "Orchidea Organizer",
+  "short_name": "Orchidea",
+  "description": "Organizer condiviso per gestire Orchidea.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fff7fb",
+  "theme_color": "#c11886",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/image/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/image/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
