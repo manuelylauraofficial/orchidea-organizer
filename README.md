@@ -256,3 +256,24 @@ VITE_VAPID_PUBLIC_KEY=LA_PUBLIC_KEY
 ```
 
 Dopo il deploy, apri l'app dal telefono e premi `📲`: se tutto è configurato bene deve arrivare una notifica di test.
+
+## Update v12 - diagnostica notifiche push
+
+Questa versione ricrea sempre la subscription Web Push quando premi il pulsante 📲. È importante se hai cambiato le chiavi VAPID: una subscription creata con una vecchia public key può non ricevere più notifiche.
+
+Dopo aver caricato questa versione:
+
+```bash
+supabase functions deploy send-push-notification
+```
+
+Poi apri l'app dal telefono e premi 📲. L'app mostra un riquadro di diagnostica con:
+
+- permesso notifiche;
+- registrazione Service Worker;
+- salvataggio dispositivo;
+- numero dispositivi trovati dalla Edge Function;
+- numero push consegnate;
+- eventuali errori restituiti dal provider Web Push.
+
+Se il test locale arriva ma il test server no, controlla che `VITE_VAPID_PUBLIC_KEY` su Vercel sia la stessa `VAPID_PUBLIC_KEY` salvata nei Supabase secrets e che `VAPID_PRIVATE_KEY` sia la private key della stessa coppia.

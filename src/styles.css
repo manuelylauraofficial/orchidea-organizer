@@ -594,3 +594,16 @@ button.tiny { padding: 8px 10px; font-size: .78rem; border-radius: 12px; }
   color: var(--orchid);
   background: rgba(193,24,134,.1);
 }
+
+/* Update v12: diagnostica push */
+.push-status {
+  margin: -6px 0 16px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .72);
+  border: 1px solid rgba(193, 24, 134, .18);
+  color: #34263c;
+  font-weight: 900;
+  box-shadow: 0 10px 30px rgba(32, 32, 42, .07);
+  line-height: 1.35;
+}

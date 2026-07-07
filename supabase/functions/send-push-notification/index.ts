@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
       recipientIds = memberIds.filter((id) => includeActor || id !== actorId)
     }
 
-    if (!recipientIds.length) return jsonResponse({ ok: true, sent: 0, reason: 'Nessun destinatario' })
+    if (!recipientIds.length) return jsonResponse({ ok: true, recipients: 0, subscriptions: 0, push_sent: 0, reason: 'Nessun destinatario' })
 
     const notificationRows = recipientIds.map((recipientId) => ({
       recipient_id: recipientId,
@@ -100,8 +100,14 @@ Deno.serve(async (req) => {
     })
 
     let sent = 0
+    const pushErrors: Array<{ subscription_id: string, status: number, message: string }> = []
     await Promise.all((subscriptions || []).map(async (sub) => {
       try {
+        if (!sub.endpoint || !sub.p256dh || !sub.auth) {
+          pushErrors.push({ subscription_id: sub.id, status: 0, message: 'Subscription incompleta: endpoint/p256dh/auth mancanti' })
+          return
+        }
+
         await webpush.sendNotification({
           endpoint: sub.endpoint,
           keys: { p256dh: sub.p256dh, auth: sub.auth },
@@ -112,14 +118,22 @@ Deno.serve(async (req) => {
         sent += 1
       } catch (error) {
         const statusCode = Number(error?.statusCode || error?.status || 0)
+        const message = String(error?.message || error?.body || error || 'Errore sconosciuto').slice(0, 300)
+        pushErrors.push({ subscription_id: sub.id, status: statusCode, message })
         if (statusCode === 404 || statusCode === 410) {
           await admin.from('push_subscriptions').update({ active: false }).eq('id', sub.id)
         }
-        console.error('Errore invio push', statusCode, error?.message || error)
+        console.error('Errore invio push', statusCode, message)
       }
     }))
 
-    return jsonResponse({ ok: true, recipients: recipientIds.length, push_sent: sent })
+    return jsonResponse({
+      ok: true,
+      recipients: recipientIds.length,
+      subscriptions: (subscriptions || []).length,
+      push_sent: sent,
+      errors: pushErrors.slice(0, 5),
+    })
   } catch (error) {
     console.error(error)
     return jsonResponse({ error: error?.message || 'Errore invio notifiche' }, 500)

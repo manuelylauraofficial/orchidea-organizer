@@ -82,6 +82,7 @@ function App() {
   const [notificationPermission, setNotificationPermission] = useState(getNotificationPermission)
   const [notifications, setNotifications] = useState([])
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [pushStatus, setPushStatus] = useState('')
   const membersRef = useRef([])
   const [data, setData] = useState({
     tasks: [], events: [], notes: [], lists: [], documents: [], expenses: [], announcements: [], members: []
@@ -180,43 +181,83 @@ function App() {
     return () => supabase.removeChannel(channel)
   }, [user?.id])
 
-  function showToast(message) {
+  function showToast(message, duration = 4200) {
     setToast(message)
-    window.setTimeout(() => setToast(''), 2600)
+    window.setTimeout(() => setToast(''), duration)
   }
 
   async function requestNotifications() {
+    setPushStatus('')
+
     if (!canUseBrowserNotifications()) {
-      showToast('Questo dispositivo o browser non supporta le notifiche push.')
+      showToast('Questo dispositivo o browser non supporta le notifiche push.', 7000)
+      setPushStatus('❌ Browser non supportato: manca la Notification API.')
+      return
+    }
+    if (!('PushManager' in window)) {
+      showToast('Questo browser non supporta Web Push.', 7000)
+      setPushStatus('❌ Browser non supportato: manca PushManager.')
+      return
+    }
+    if (!('serviceWorker' in navigator)) {
+      showToast('Service Worker non supportato su questo dispositivo.', 7000)
+      setPushStatus('❌ Service Worker non supportato.')
+      return
+    }
+    if (!window.isSecureContext && window.location.hostname !== 'localhost') {
+      showToast('Le notifiche push richiedono HTTPS. Apri l’app dal link Vercel o dall’icona installata.', 8000)
+      setPushStatus('❌ Contesto non sicuro: apri l’app in HTTPS.')
       return
     }
     if (!user?.id || !currentSpace?.id) {
-      showToast('Apri prima uno spazio Orchidea.')
+      showToast('Apri prima uno spazio Orchidea.', 6000)
+      setPushStatus('❌ Nessuno spazio attivo.')
       return
     }
+
     const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY?.trim()
     if (!vapidPublicKey) {
-      showToast('Manca VITE_VAPID_PUBLIC_KEY su Vercel/.env. Aggiungila per abilitare le push vere.')
+      showToast('Manca VITE_VAPID_PUBLIC_KEY su Vercel/.env. Aggiungila per abilitare le push vere.', 9000)
+      setPushStatus('❌ VITE_VAPID_PUBLIC_KEY mancante nel frontend.')
       return
     }
 
     try {
+      setPushStatus('1/5 Richiedo permesso notifiche…')
       const permission = await window.Notification.requestPermission()
       setNotificationPermission(permission)
       if (permission !== 'granted') {
-        showToast('Notifiche non attivate. Puoi abilitarle dalle impostazioni del browser.')
+        showToast('Notifiche non attivate. Puoi abilitarle dalle impostazioni del browser.', 7000)
+        setPushStatus(`❌ Permesso notifiche: ${permission}`)
         return
       }
 
+      setPushStatus('2/5 Registro Service Worker…')
       const registration = await getServiceWorkerRegistration()
       await registration.update().catch(() => {})
-      let subscription = await registration.pushManager.getSubscription()
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-        })
+      await navigator.serviceWorker.ready
+
+      // Test locale: verifica che permesso + service worker funzionino sul dispositivo.
+      await showBrowserNotification('Test locale Orchidea', {
+        body: 'Permesso notifiche e Service Worker funzionano su questo dispositivo.',
+        icon: '/image/icon.png',
+        badge: '/image/icon.png',
+        tag: `orchidea-local-test-${Date.now()}`,
+        data: { url: '/' },
+      }).catch(() => {})
+
+      setPushStatus('3/5 Ricreo la subscription Web Push…')
+      const oldSubscription = await registration.pushManager.getSubscription()
+      if (oldSubscription) {
+        // Importante: se le chiavi VAPID sono cambiate, la vecchia subscription non riceve più.
+        await oldSubscription.unsubscribe().catch(() => {})
+        await supabase.from('push_subscriptions').update({ active: false }).eq('endpoint', oldSubscription.endpoint)
       }
+
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+      })
 
       const json = subscription.toJSON()
       const { error } = await supabase.from('push_subscriptions').upsert({
@@ -231,6 +272,15 @@ function App() {
 
       if (error) throw error
 
+      const { count: savedCount, error: countError } = await supabase
+        .from('push_subscriptions')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('active', true)
+
+      if (countError) throw countError
+
+      setPushStatus(`4/5 Dispositivo salvato (${savedCount || 1} attivo). Invio test server…`)
       const testResult = await sendPushNotification({
         kind: 'test',
         title: 'Notifiche Orchidea attive',
@@ -242,12 +292,21 @@ function App() {
       })
 
       if (testResult?.push_sent > 0) {
-        showToast('Notifiche push attivate. Ti ho inviato una notifica di test.')
+        const msg = `✅ Test push OK: inviate ${testResult.push_sent}/${testResult.subscriptions || testResult.push_sent}.`
+        setPushStatus(msg)
+        showToast('Notifiche push attivate. Ti ho inviato una notifica di test.', 7000)
       } else {
-        showToast('Dispositivo salvato. Se non arriva il test, controlla permessi notifiche/batteria e secrets Supabase.')
+        const errors = Array.isArray(testResult?.errors) && testResult.errors.length
+          ? ` Errori: ${testResult.errors.map((e) => `${e.status || 'no-status'} ${e.message || ''}`).join(' | ')}`
+          : ''
+        const msg = `⚠️ Test server non consegnato. Destinatari: ${testResult?.recipients ?? '—'}, dispositivi: ${testResult?.subscriptions ?? '—'}, inviate: ${testResult?.push_sent ?? 0}.${errors}`
+        setPushStatus(msg)
+        showToast('Dispositivo salvato, ma il test push server non è arrivato. Leggi il riquadro diagnostica sotto.', 9000)
       }
     } catch (error) {
-      showToast(error.message || 'Non sono riuscito ad attivare le notifiche push.')
+      const message = error?.message || 'Non sono riuscito ad attivare le notifiche push.'
+      setPushStatus(`❌ Errore push: ${message}`)
+      showToast(message, 9000)
     }
   }
 
@@ -503,6 +562,8 @@ function App() {
             <div className="avatar">{(profile?.full_name || user.email || 'O').slice(0, 1).toUpperCase()}</div>
           </div>
         </header>
+
+        {pushStatus && <div className="push-status">{pushStatus}</div>}
 
         <div className="mobile-tabs">
           {TABS.map((tab) => (
