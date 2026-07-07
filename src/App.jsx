@@ -209,6 +209,7 @@ function App() {
       }
 
       const registration = await getServiceWorkerRegistration()
+      await registration.update().catch(() => {})
       let subscription = await registration.pushManager.getSubscription()
       if (!subscription) {
         subscription = await registration.pushManager.subscribe({
@@ -229,7 +230,22 @@ function App() {
       }, { onConflict: 'endpoint' })
 
       if (error) throw error
-      showToast('Notifiche push attivate su questo dispositivo.')
+
+      const testResult = await sendPushNotification({
+        kind: 'test',
+        title: 'Notifiche Orchidea attive',
+        body: 'Questo telefono riceverà le notifiche importanti dell’organizer.',
+        priority: 'alta',
+        recipientIds: [user.id],
+        includeActor: true,
+        silentIfNoRecipients: false,
+      })
+
+      if (testResult?.push_sent > 0) {
+        showToast('Notifiche push attivate. Ti ho inviato una notifica di test.')
+      } else {
+        showToast('Dispositivo salvato. Se non arriva il test, controlla permessi notifiche/batteria e secrets Supabase.')
+      }
     } catch (error) {
       showToast(error.message || 'Non sono riuscito ad attivare le notifiche push.')
     }
@@ -258,8 +274,8 @@ function App() {
       .is('read_at', null)
   }
 
-  async function sendPushNotification({ kind, title, body, priority = 'normale', sourceTable = null, sourceId = null, recipientIds = null }) {
-    if (!user?.id) return
+  async function sendPushNotification({ kind, title, body, priority = 'normale', sourceTable = null, sourceId = null, recipientIds = null, includeActor = false, silentIfNoRecipients = false }) {
+    if (!user?.id) return null
     const payload = {
       space_id: currentSpace?.id || null,
       kind,
@@ -269,11 +285,31 @@ function App() {
       source_table: sourceTable,
       source_id: sourceId,
       recipient_ids: recipientIds,
+      include_actor: includeActor,
       url: '/',
     }
 
-    const { error } = await supabase.functions.invoke('send-push-notification', { body: payload })
-    if (error) console.warn('Push non inviata:', error.message)
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) throw new Error('Sessione scaduta: rifai il login per inviare notifiche.')
+
+      const { data: result, error } = await supabase.functions.invoke('send-push-notification', {
+        body: payload,
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+
+      if (error) throw error
+      if (result?.error) throw new Error(result.error)
+      if (!silentIfNoRecipients && Number(result?.recipients || 0) > 0 && Number(result?.push_sent || 0) === 0) {
+        showToast('Notifica creata, ma nessun dispositivo ha ricevuto la push. Premi 📲 su ogni telefono e ricontrolla i secrets VAPID.')
+      }
+      return result
+    } catch (error) {
+      console.warn('Push non inviata:', error)
+      showToast(`Notifica push non inviata: ${error.message || 'controlla configurazione Supabase/Vercel'}`)
+      return null
+    }
   }
 
   function handleRealtimeChange(table, payload) {
@@ -460,7 +496,7 @@ function App() {
               </button>
               {notificationsOpen && <NotificationPanel notifications={notifications} onClose={() => setNotificationsOpen(false)} onMarkRead={markNotificationsRead} />}
             </div>
-            <button className={`notify-toggle ${notificationPermission === 'granted' ? 'enabled' : ''}`} onClick={requestNotifications} title={notificationPermission === 'granted' ? 'Push attive' : 'Attiva notifiche push'}>
+            <button className={`notify-toggle ${notificationPermission === 'granted' ? 'enabled' : ''}`} onClick={requestNotifications} title={notificationPermission === 'granted' ? 'Invia notifica di test' : 'Attiva notifiche push'}>
               {notificationPermission === 'granted' ? '📲' : '🔕'}
             </button>
             <button className="ghost" onClick={() => loadAll(currentSpace.id)}>Aggiorna</button>
@@ -846,20 +882,75 @@ function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification
   const initialForm = { title: '', starts_at: `${todayISO()}T21:30`, ends_at: '', location: '', category: 'generale', notes: '' }
   const [form, setForm] = useState(initialForm)
   const [formOpen, setFormOpen] = useState(false)
+  const [editingEventId, setEditingEventId] = useState(null)
   const [filterDay, setFilterDay] = useState('')
+
+  const isEditing = Boolean(editingEventId)
 
   const events = useMemo(() => {
     const base = filterDay ? data.events.filter((e) => e.starts_at?.slice(0, 10) === filterDay) : data.events
     return base.slice().sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))
   }, [data.events, filterDay])
 
-  async function addEvent(e) {
+  function openNewEvent() {
+    setEditingEventId(null)
+    setForm(initialForm)
+    setFormOpen(true)
+  }
+
+  function closeEventForm() {
+    setEditingEventId(null)
+    setForm(initialForm)
+    setFormOpen(false)
+  }
+
+  function editEvent(event) {
+    setEditingEventId(event.id)
+    setForm({
+      title: event.title || '',
+      starts_at: event.starts_at ? event.starts_at.slice(0, 16) : `${todayISO()}T21:30`,
+      ends_at: event.ends_at ? event.ends_at.slice(0, 16) : '',
+      location: event.location || '',
+      category: event.category || 'generale',
+      notes: event.notes || '',
+    })
+    setFormOpen(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function saveEvent(e) {
     e.preventDefault()
-    const { data: created, error } = await supabase.from('events').insert({ ...form, space_id: currentSpace.id, ends_at: form.ends_at || null }).select('id,title').single()
+    const payload = {
+      title: form.title.trim(),
+      starts_at: form.starts_at,
+      ends_at: form.ends_at || null,
+      location: form.location || '',
+      category: form.category || 'generale',
+      notes: form.notes || '',
+    }
+
+    if (!payload.title || !payload.starts_at) return
+
+    if (isEditing) {
+      const { error } = await supabase.from('events').update(payload).eq('id', editingEventId)
+      if (error) showToast(error.message)
+      else {
+        showToast('Evento aggiornato')
+        closeEventForm()
+        loadAll()
+      }
+      return
+    }
+
+    const { data: created, error } = await supabase
+      .from('events')
+      .insert({ ...payload, space_id: currentSpace.id })
+      .select('id,title')
+      .single()
+
     if (error) showToast(error.message)
     else {
-      setForm(initialForm)
-      setFormOpen(false)
+      closeEventForm()
       sendPushNotification({ kind: 'event', title: 'Nuovo evento in agenda', body: created?.title || form.title, sourceTable: 'events', sourceId: created?.id })
       loadAll()
     }
@@ -868,21 +959,24 @@ function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification
   async function deleteEvent(id) {
     const { error } = await supabase.from('events').delete().eq('id', id)
     if (error) showToast(error.message)
-    else loadAll()
+    else {
+      if (editingEventId === id) closeEventForm()
+      loadAll()
+    }
   }
 
   return (
     <div className="work-area">
       <FormLauncher
         open={formOpen}
-        title="Nuovo evento"
-        description="Apri il modulo solo quando devi inserire una serata, una scadenza o una riunione."
+        title={isEditing ? 'Modifica evento' : 'Nuovo evento'}
+        description={isEditing ? 'Aggiorna data, orario, luogo, categoria e note senza ricreare l’evento.' : 'Apri il modulo solo quando devi inserire una serata, una scadenza o una riunione.'}
         buttonLabel="+ Nuovo evento"
         openLabel="Chiudi"
-        onOpen={() => setFormOpen(true)}
-        onClose={() => setFormOpen(false)}
+        onOpen={openNewEvent}
+        onClose={closeEventForm}
       >
-        <form className="panel-form" onSubmit={addEvent}>
+        <form className="panel-form" onSubmit={saveEvent}>
           <Field label="Titolo" value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder="Serata, scadenza, riunione..." required />
           <div className="form-grid two-fields">
             <Field label="Inizio" type="datetime-local" value={form.starts_at} onChange={(v) => setForm({ ...form, starts_at: v })} required />
@@ -894,8 +988,8 @@ function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification
           </div>
           <Textarea label="Note" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} />
           <div className="form-actions">
-            <button type="button" className="ghost" onClick={() => setFormOpen(false)}>Annulla</button>
-            <button className="primary">Salva evento</button>
+            <button type="button" className="ghost" onClick={closeEventForm}>Annulla</button>
+            <button className="primary">{isEditing ? 'Salva modifiche' : 'Salva evento'}</button>
           </div>
         </form>
       </FormLauncher>
@@ -911,10 +1005,14 @@ function Calendar({ currentSpace, data, showToast, loadAll, sendPushNotification
               <div className="timeline-date"><strong>{fmtDateTime(event.starts_at)}</strong><span>{event.category}</span></div>
               <div>
                 <h3>{event.title}</h3>
+                {event.ends_at && <p>🕒 Fine: {fmtDateTime(event.ends_at)}</p>}
                 {event.location && <p>📍 {event.location}</p>}
                 {event.notes && <p>{event.notes}</p>}
               </div>
-              <button className="icon-btn" onClick={() => deleteEvent(event.id)}>×</button>
+              <div className="icon-actions timeline-actions">
+                <button className="icon-btn" title="Modifica evento" onClick={() => editEvent(event)}>✎</button>
+                <button className="icon-btn" title="Elimina evento" onClick={() => deleteEvent(event.id)}>×</button>
+              </div>
             </article>
           ))}
           {!events.length && <Empty text="Agenda vuota per questo filtro." />}
@@ -1392,6 +1490,7 @@ function Chat({ user, profile, showToast, sendPushNotification }) {
   const [messages, setMessages] = useState([])
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [requestOpen, setRequestOpen] = useState(false)
 
   useEffect(() => {
     loadChatData()

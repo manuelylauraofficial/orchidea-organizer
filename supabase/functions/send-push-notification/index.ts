@@ -48,11 +48,12 @@ Deno.serve(async (req) => {
     const priority = String(payload.priority || 'normale').slice(0, 40)
     const spaceId = payload.space_id ? String(payload.space_id) : null
     const recipientIdsFromBody = Array.isArray(payload.recipient_ids) ? payload.recipient_ids.map(String) : null
+    const includeActor = payload.include_actor === true
 
     let recipientIds: string[] = []
 
     if (recipientIdsFromBody?.length) {
-      recipientIds = [...new Set(recipientIdsFromBody.filter((id) => id && id !== actorId))].slice(0, 20)
+      recipientIds = [...new Set(recipientIdsFromBody.filter((id) => id && (includeActor || id !== actorId)))].slice(0, 20)
     } else if (spaceId) {
       const { data: members, error: membersError } = await admin
         .from('space_members')
@@ -62,7 +63,7 @@ Deno.serve(async (req) => {
       if (membersError) throw membersError
       const memberIds = (members || []).map((m) => m.user_id)
       if (!memberIds.includes(actorId)) return jsonResponse({ error: 'Non sei membro di questo spazio' }, 403)
-      recipientIds = memberIds.filter((id) => id !== actorId)
+      recipientIds = memberIds.filter((id) => includeActor || id !== actorId)
     }
 
     if (!recipientIds.length) return jsonResponse({ ok: true, sent: 0, reason: 'Nessun destinatario' })
@@ -104,7 +105,10 @@ Deno.serve(async (req) => {
         await webpush.sendNotification({
           endpoint: sub.endpoint,
           keys: { p256dh: sub.p256dh, auth: sub.auth },
-        }, webPushPayload, { TTL: priority === 'urgente' ? 86400 : 21600 })
+        }, webPushPayload, {
+          TTL: priority === 'urgente' ? 86400 : 21600,
+          urgency: priority === 'urgente' ? 'high' : 'normal',
+        })
         sent += 1
       } catch (error) {
         const statusCode = Number(error?.statusCode || error?.status || 0)

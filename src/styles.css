@@ -584,3 +584,13 @@ button.tiny { padding: 8px 10px; font-size: .78rem; border-radius: 12px; }
     flex-direction: column-reverse;
   }
 }
+
+/* Update v9: modifica eventi agenda + azioni timeline */
+.timeline-actions {
+  align-self: start;
+  justify-content: flex-end;
+}
+.timeline-actions .icon-btn:first-child {
+  color: var(--orchid);
+  background: rgba(193,24,134,.1);
+}

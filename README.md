@@ -219,3 +219,40 @@ Dopo aver aggiornato l'icona, su iPhone/Android può servire rimuovere e reinsta
 - Dopo il salvataggio il form si richiude automaticamente.
 - Le attività pubblicate ora possono essere modificate dal pulsante `✎` sulla card.
 - La chat ha un pulsante `+ Nuova richiesta chat` per non tenere sempre visibile la ricerca utenti.
+
+## Update v9 - modifica agenda e diagnostica push
+
+- Gli eventi in agenda ora possono essere modificati con il pulsante `✎`.
+- Il pulsante `📲` ora salva il dispositivo e invia anche una notifica di test allo stesso telefono.
+- L'invio push usa sempre il token della sessione Supabase, così la Edge Function riconosce correttamente l'utente.
+- Se una notifica non parte, l'app mostra un messaggio invece di nascondere l'errore solo in console.
+- Il service worker è stato aggiornato con claim immediato, icone assolute e click sulla notifica verso l'app.
+- È stato rimosso `package-lock.json` generato con registry interno e aggiunto `.npmrc` con registry ufficiale npm per evitare errori Vercel tipo `applied-caas` / `ETIMEDOUT`.
+
+Dopo questo update devi fare anche il redeploy della Edge Function, perché è cambiato il file:
+
+```bash
+supabase functions deploy send-push-notification
+```
+
+Poi controlla i secrets:
+
+```bash
+supabase secrets list
+```
+
+Devono esserci:
+
+```txt
+VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY
+VAPID_SUBJECT
+```
+
+Su Vercel deve esserci:
+
+```env
+VITE_VAPID_PUBLIC_KEY=LA_PUBLIC_KEY
+```
+
+Dopo il deploy, apri l'app dal telefono e premi `📲`: se tutto è configurato bene deve arrivare una notifica di test.

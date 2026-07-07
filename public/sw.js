@@ -1,3 +1,21 @@
+const CACHE_VERSION = 'orchidea-organizer-v9'
+
+self.addEventListener('install', (event) => {
+  self.skipWaiting()
+})
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim())
+})
+
+function absoluteUrl(path) {
+  try {
+    return new URL(path, self.location.origin).href
+  } catch (_error) {
+    return path
+  }
+}
+
 self.addEventListener('push', (event) => {
   let data = {}
   try {
@@ -9,10 +27,11 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'Orchidea Organizer'
   const options = {
     body: data.body || 'Hai un nuovo aggiornamento importante.',
-    icon: data.icon || '/image/icon.png',
-    badge: data.badge || '/image/icon.png',
+    icon: absoluteUrl(data.icon || '/image/icon.png'),
+    badge: absoluteUrl(data.badge || '/image/icon.png'),
     tag: data.tag || `orchidea-${Date.now()}`,
     renotify: true,
+    timestamp: Date.now(),
     data: { url: data.url || '/' },
   }
 
@@ -21,7 +40,7 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const targetUrl = event.notification?.data?.url || '/'
+  const targetUrl = absoluteUrl(event.notification?.data?.url || '/')
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
