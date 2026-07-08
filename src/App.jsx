@@ -333,6 +333,22 @@ function App() {
       .is('read_at', null)
   }
 
+  async function markNotificationRead(notificationId) {
+    if (!user?.id || !notificationId) return
+    const now = new Date().toISOString()
+    setNotifications((prev) => prev.map((n) => n.id === notificationId ? { ...n, read_at: n.read_at || now } : n))
+    const { error } = await supabase
+      .from('app_notifications')
+      .update({ read_at: now })
+      .eq('id', notificationId)
+      .eq('recipient_id', user.id)
+
+    if (error) {
+      showToast('Non sono riuscito a segnare la notifica come letta.')
+      await loadNotifications()
+    }
+  }
+
   async function sendPushNotification({ kind, title, body, priority = 'normale', sourceTable = null, sourceId = null, recipientIds = null, includeActor = false, silentIfNoRecipients = false }) {
     if (!user?.id) return null
     const payload = {
@@ -553,7 +569,14 @@ function App() {
               <button className="notify-toggle enabled" onClick={() => setNotificationsOpen((v) => !v)} title="Apri notifiche">
                 🔔{unreadCount > 0 && <span className="notif-badge">{unreadCount > 9 ? '9+' : unreadCount}</span>}
               </button>
-              {notificationsOpen && <NotificationPanel notifications={notifications} onClose={() => setNotificationsOpen(false)} onMarkRead={markNotificationsRead} />}
+              {notificationsOpen && (
+                <NotificationPanel
+                  notifications={notifications}
+                  onClose={() => setNotificationsOpen(false)}
+                  onMarkRead={markNotificationsRead}
+                  onMarkOneRead={markNotificationRead}
+                />
+              )}
             </div>
             <button className={`notify-toggle ${notificationPermission === 'granted' ? 'enabled' : ''}`} onClick={requestNotifications} title={notificationPermission === 'granted' ? 'Invia notifica di test' : 'Attiva notifiche push'}>
               {notificationPermission === 'granted' ? '📲' : '🔕'}
@@ -1517,22 +1540,38 @@ function Announcements({ currentSpace, data, showToast, loadAll, sendPushNotific
 }
 
 
-function NotificationPanel({ notifications, onClose, onMarkRead }) {
+function NotificationPanel({ notifications, onClose, onMarkRead, onMarkOneRead }) {
+  const unreadCount = notifications.filter((n) => !n.read_at).length
+
   return (
-    <div className="notification-panel">
-      <div className="panel-head compact-head">
-        <h3>Notifiche</h3>
+    <div className="notification-panel" role="dialog" aria-label="Notifiche Orchidea">
+      <div className="notification-panel-header">
         <div>
-          <button className="ghost tiny" onClick={onMarkRead}>Segna lette</button>
-          <button className="icon-btn" onClick={onClose}>×</button>
+          <h3>Notifiche</h3>
+          <span>{unreadCount ? `${unreadCount} da leggere` : 'Tutto letto'}</span>
         </div>
+        <button className="notification-close" onClick={onClose} aria-label="Chiudi notifiche">×</button>
       </div>
+
+      <div className="notification-panel-toolbar">
+        <button className="notification-read-all" onClick={onMarkRead} disabled={!unreadCount}>
+          ✓ Segna tutte come lette
+        </button>
+      </div>
+
       <div className="notification-list">
         {notifications.slice(0, 20).map((n) => (
           <article key={n.id} className={n.read_at ? 'notification-item' : 'notification-item unread'}>
-            <strong>{n.title}</strong>
-            {n.body && <p>{n.body}</p>}
-            <small>{fmtDateTime(n.created_at)}</small>
+            <div className="notification-item-main">
+              <strong>{n.title}</strong>
+              {n.body && <p>{n.body}</p>}
+              <small>{fmtDateTime(n.created_at)}</small>
+            </div>
+            {!n.read_at && (
+              <button className="notification-mark-one" onClick={() => onMarkOneRead(n.id)}>
+                Segna letta
+              </button>
+            )}
           </article>
         ))}
         {!notifications.length && <Empty text="Nessuna notifica per ora." />}
